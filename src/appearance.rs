@@ -31,6 +31,9 @@ impl Models {
 fn model_label(model: &str) -> String {
     let model = model.rsplit('/').next().unwrap_or(model);
     let Some(id) = model.strip_prefix("claude-") else {
+        if let Some(name) = model.strip_suffix(" (1M context)") {
+            return format!("{name} [1M]");
+        }
         return model.to_string();
     };
     let base = id.split('[').next().unwrap_or(id);
@@ -50,7 +53,7 @@ fn model_label(model: &str) -> String {
         .copied()
         .collect::<Vec<_>>()
         .join(".");
-    let suffix = if id.contains("[1m]") { " 1M" } else { "" };
+    let suffix = if id.contains("[1m]") { " [1M]" } else { "" };
     if version.is_empty() {
         format!("{family}{suffix}")
     } else {
@@ -64,7 +67,7 @@ mod tests {
     #[test]
     fn model_versions_ignore_release_dates_and_preserve_unknown_providers() {
         assert_eq!(model_label("claude-3-5-sonnet-20241022"), "Sonnet 3.5");
-        assert_eq!(model_label("claude-opus-4-6[1m]"), "Opus 4.6 1M");
+        assert_eq!(model_label("claude-opus-4-6[1m]"), "Opus 4.6 [1M]");
         assert_eq!(model_label("provider/custom-model"), "custom-model");
         assert_eq!(model_label("Opus 4.6"), "Opus 4.6");
     }

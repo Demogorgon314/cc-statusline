@@ -146,7 +146,7 @@ fn native_fields_render_without_credentials_or_transcript() {
         "mode",
     ]);
     let text = f.text(&[], &json!({
-        "model":{"display_name":"Opus 4.6"},"effort":{"level":"high"},
+        "model":{"display_name":"Opus 5.5 (1M context)"},"effort":{"level":"high"},
         "context_window":{"context_window_size":1000000,"used_percentage":12.5,
             "current_usage":{"input_tokens":25000,"cache_read_input_tokens":100000,"output_tokens":10000}},
         "cost":{"total_cost_usd":1.23,"total_duration_ms":65000,"total_lines_added":10,"total_lines_removed":2},
@@ -154,7 +154,7 @@ fn native_fields_render_without_credentials_or_transcript() {
         "output_style":{"name":"Explanatory"},"vim":{"mode":"NORMAL"},"fast_mode":true
     }));
     for expected in [
-        "Opus 4.6 high",
+        "Opus 5.5 [1M] high",
         "ctx 13% (125.0k/1.00M)",
         "$1.23",
         "1m",
