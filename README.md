@@ -1,23 +1,47 @@
+<div align="center">
+
 # cc-statusline
 
-A Rust status line for Claude Code, built from [kimi-statusline](https://github.com/Demogorgon314/kimi-statusline) and informed by [CCometixLine](https://github.com/Haleclipse/CCometixLine).
+**See what your Claude Code session is really costing you — tokens, cache hits and plan quota — right in the footer.**
 
-[中文](README.zh.md)
+[![Release](https://img.shields.io/github/v/release/Demogorgon314/cc-statusline?style=flat-square)](https://github.com/Demogorgon314/cc-statusline/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/Demogorgon314/cc-statusline/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/Demogorgon314/cc-statusline/actions)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+![Rust](https://img.shields.io/badge/rust-%E2%9C%93-orange?style=flat-square&logo=rust)
 
-```text
-$1.23  Opus 4.6 high  …/code/project  main [+42 -7]  ctx 38% (76.0k/200.0k)  │ total ↑ 1.26M · ↓ 21.4k cache 96.2%  5h 42% ↻2h00m
+English | [中文](README.zh.md)
+
+![cc-statusline with a demo Claude Code session](assets/hero.png)
+
+</div>
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Demogorgon314/cc-statusline/main/install.sh | sh
 ```
 
-## Install from this checkout
+Restart Claude Code to load the status line. The download scripts require a published GitHub release; before the first release, use the source instructions below.
 
-```sh
-cargo install --path . --locked
+<details>
+<summary>Windows, manual configuration, or from source</summary>
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/Demogorgon314/cc-statusline/main/install.ps1 | iex
+```
+
+**From source**
+
+```bash
+cargo install --git https://github.com/Demogorgon314/cc-statusline --locked
 cc-statusline install
 ```
 
-Restart Claude Code. Installation updates only `statusLine` in `~/.claude/settings.json`, keeps the previous file as `settings.json.bak`, and refuses to replace another command unless you pass `--force`. `CLAUDE_CONFIG_DIR` overrides the Claude home directory.
+From a local checkout, use `cargo install --path . --locked`, then `cc-statusline install`.
 
-To configure it manually:
+**Manual configuration** in `~/.claude/settings.json`:
 
 ```json
 {
@@ -29,148 +53,176 @@ To configure it manually:
 }
 ```
 
-The automatic installer uses the quoted absolute executable path, so PATH configuration is unnecessary. On Windows, Claude Code executes the command through Git Bash.
+Merge this object into your existing settings. The automatic installer uses a quoted absolute executable path, so it does not depend on PATH. It preserves unrelated settings, backs up to `settings.json.bak`, and refuses to replace another status line unless you pass `install --force`. `CLAUDE_CONFIG_DIR` overrides `~/.claude`.
 
-`install.sh`, `install.ps1`, and `update` target this project's GitHub release assets; they require a published release. Source installation works before the first release.
+Requires Claude Code with command status line support. On Windows, Claude runs the command through Git Bash. Nerd Font and powerline styles need a Nerd Font in your terminal; the default plain style does not.
 
-## Features
+</details>
 
-- Native Claude JSON input: model, reasoning effort, context, cost, duration, output style, code changes, Vim/agent/fast-mode badges, PR links, and rate limits.
-- Incremental transcript accounting: cumulative input/output tokens, cache hit rate, and the busiest subagent model. Split assistant messages are deduplicated by `message.id`.
-- Estimated API output throughput (`≈42 tok/s`), sampled from token and API-time deltas.
-- Git branch, detached HEAD, working-tree changes, conflicts, ahead/behind, and optional open PR lookup through `gh`.
-- Ten themes, plain/Nerd Font/powerline styles, custom colors and icons, English/Chinese labels, width fitting, and a keyboard/mouse configurator.
-- Safe install/uninstall, configuration backups, and checksum-verified binary updates.
+## Why
 
-Claude-specific data is optional. Missing fields disappear instead of breaking the line. The program does not modify Claude's executable.
+Keep the details of your Claude Code session visible without interrupting your work:
 
-## Commands
+- 📊 **Whole-session token usage** across the main agent and visible subagents, plus **cache hit rate**, colored from red to green
+- ⏳ **Five-hour and seven-day quota usage** and reset times (for example, `5h 42% ↻1h20m`)
+- 🧩 **The subagent model with the most input tokens**, alongside Claude's estimated session cost
+- 🌿 **Git at a glance**: changed lines, ahead/behind, and clickable `[PR#42]` links
 
-```sh
-cc-statusline                     # interactive menu when stdin is a terminal
-cc-statusline config              # reorder/toggle segments, edit colors, live preview
-cc-statusline init                # write the default config; --force to replace
-cc-statusline themes
-cc-statusline -t nord preview
-cc-statusline preview --cwd /path/to/project --width 100
-cc-statusline quota               # explicitly query the Claude OAuth usage endpoint
-cc-statusline update --check
-cc-statusline update
-cc-statusline uninstall
-```
+Model and live reasoning effort, context usage, Vim/agent/fast-mode badges, and estimated output throughput fit alongside them. Long model context labels stay compact: `Opus 5.5 [1M]`.
 
-With piped stdin, the default command renders one line from Claude's JSON. Press Ctrl+C twice within 1.5 seconds to exit the configurator and discard unsaved edits.
+## Make it yours
 
-Try the bundled payload: `cargo run -- --theme claude --width 160 < examples/claude.json`.
+![All ten built-in themes](assets/themes.png)
 
-Preview reuses the last payload observed for the requested directory. `--session ID` only accepts that cached session; it never substitutes a different session. Before any payload has been observed, preview shows the directory and a generic Claude label. The configurator adds demonstration values for missing data.
+10 built-in themes, from the Claude-colored default to full powerline. Run `cc-statusline` and choose the configurator, or open it directly with `cc-statusline config`:
 
-## Segments
+![Interactive TUI configurator](assets/configurator.png)
 
-| ID | Data |
+Toggle and reorder segments, choose colors and icons, switch themes, and preview with your session's data. Keyboard and mouse both work: click to select, click again to toggle or edit, drag to reorder, and scroll to navigate. Inspired by [CCometixLine](https://github.com/Haleclipse/CCometixLine).
+
+In any TUI screen, press **Ctrl+C twice within 1.5 seconds** to exit. The first press shows a confirmation hint; exiting discards unsaved changes.
+
+## Fast by design
+
+cc-statusline is a single Rust binary. Work stays bounded as your session grows:
+
+- **Incremental transcript reads** resume from cached cursors, with a 4 MiB per-file read limit and a 100 ms parsing budget per refresh; older history catches up over successive refreshes
+- Optional OAuth quota refreshes and `gh pr view` run **in the background**; native quota needs no extra request
+- **Adaptive width** compacts the line and removes lower-priority segments as the terminal narrows
+
+![Adaptive status line at four terminal widths](assets/adaptive.png)
+
+## Reference
+
+<details>
+<summary>Segments</summary>
+
+| ID | Content |
 | --- | --- |
-| `mode` | Vim mode, agent name, fast mode |
-| `cost` | Estimated session cost in USD from Claude |
-| `model` | Display name and live reasoning effort |
+| `mode` | Vim mode, agent name, fast-mode badges |
+| `cost` | Claude's estimated session cost in USD |
+| `model` | Model and live reasoning effort; compact `[1M]` suffix |
 | `output_style` | Output style (disabled by default) |
-| `directory` | Working directory, configurable path depth |
-| `git` | Branch, diff, conflicts, upstream tracking, PR |
+| `directory` | Working directory |
+| `git` | Branch, diff, conflicts, ahead/behind, open PR (fallback lookup needs `gh`) |
 | `context` | Context percentage and input tokens / capacity |
-| `usage` | Cumulative session input/output and cache hit rate, including subagents |
-| `subagent` | Usage of the subagent model with the most input |
-| `session` | Claude's accumulated duration, falling back to transcript age (disabled by default) |
-| `quota` | Five-hour, seven-day and gateway spend limits, with reset times |
+| `usage` | Whole-session input ↑ / output ↓ / cache hit rate, including subagents |
+| `subagent` | Usage of the subagent model with the most input tokens |
+| `session` | Accumulated session duration (disabled by default) |
+| `quota` | Five-hour / seven-day quota, optional gateway spend limit, reset times |
 | `changes` | Session lines added/removed (disabled by default) |
-| `tps` | Approximate output tokens per second of API request time |
+| `tps` | Estimated API output throughput: `≈42 tok/s` (compact: `≈42 t/s`) |
 
-Context tokens count uncached input plus cache reads and writes, excluding output. Native `used_percentage` takes precedence. Session totals come from the transcript, because the meaning of `context_window.total_*_tokens` differs between Claude versions. Cost is Claude's estimate, not a separately calculated invoice.
+When space runs out, segments drop in this order: session → tps → changes → git → directory → subagent → output_style → cost → context → quota → mode.
 
-The live renderer reads only `transcript_path` and its `<session>/subagents/*.jsonl` directory. Empty, missing, or mismatched sessions never inherit another session's statistics. First-time reads are bounded and catch up over successive refreshes; incomplete trailing records are retried later. Transcript truncation/replacement resets the affected cursor.
+Context counts input plus cache reads and writes, excluding output; Claude's native percentage takes precedence. Session totals come from the exact supplied transcript and its adjacent subagent logs, deduplicated by message ID. Missing sessions never inherit another session's statistics. Quota belongs to the account and can persist across sessions.
 
-### Estimated TPS
+Preview and the configurator use the last observed payload for the current directory. `preview --session ID` only accepts a matching cached session. Before one is available, preview shows a generic Claude label; the configurator fills missing values with demo data.
 
-`tps` displays `≈42 tok/s` (`≈42 t/s` in compact mode):
+**How TPS works**
 
 ```text
 Δ deduplicated transcript output tokens × 1000 / Δ cost.total_api_duration_ms
 ```
 
-It includes visible subagent output, while shared parent messages count once. The denominator is Claude's accumulated API request time, including first-token waits and retries. Parallel requests contribute their individual durations; this measures request-time-normalized throughput, not parallel wall-clock throughput or pure decode speed. Independently updated logs/timers and API calls absent from transcripts make it an estimate.
+This includes visible subagent output. API time includes first-token waits and retries; parallel requests contribute their individual durations. It is an estimate of throughput per second of API request time, rather than pure decode speed or parallel wall-clock throughput. Logs and timers can update separately, and some API calls may not appear in transcripts.
 
-The first complete observation establishes a baseline. A value appears after both counters advance; idle refreshes retain the last value. Missing timing, partial logs, historical log catch-up, model changes, counter rollback, replaced logs, a changed set of subagent logs, or a sampling gap over 30 minutes require a new baseline. Preview reads the cached estimate without advancing the sampler.
+The first complete observation establishes a baseline; a value appears after both counters advance. Idle refreshes retain the last estimate. Missing timing, partial logs or historical catch-up, model changes, counter rollback, replaced logs, changed subagent files, or a sampling gap over 30 minutes require a fresh baseline. Preview never advances the sampler.
 
-New default configurations enable TPS. For existing configurations, enable **TPS** in `cc-statusline config` or add:
+New configurations enable TPS. In existing configurations, enable **TPS** in `cc-statusline config`. Estimates dim after five minutes by default; options are shown below.
 
-```toml
-[[segments]]
-id = "tps"
-enabled = true
-options = { stale_secs = 300, hide_when_stale = false }
-```
+</details>
 
-After five minutes without a new measurement the estimate dims. Set `hide_when_stale = true` to hide it instead, or `stale_secs = 0` to disable dimming. Narrow layouts may drop TPS to keep the model and token usage visible.
+<details>
+<summary>Configuration file</summary>
 
-## Configuration
-
-`~/.claude/cc-statusline/config.toml`:
+`~/.claude/cc-statusline/config.toml` (custom themes go in `themes/<name>.toml`), following the segment-based format of CCometixLine:
 
 ```toml
 theme = "claude"
 
 [style]
 mode = "plain"          # plain | nerd_font | powerline
-separator = "  "
-lang = "en"             # en | zh
+separator = "  "        # "" for powerline arrows
+lang = "en"             # or "zh"
 palette = "dark"        # dark | light | custom palette name
-width = 0              # 0: auto-detect; --width overrides it
-
-[[segments]]
-id = "model"
-enabled = true
-colors = { text = "primary" }
-
-[[segments]]
-id = "context"
-enabled = true
-options = { show_tokens = true, colorful = true }
+width = 0              # auto-detect; --width overrides this
 
 [[segments]]
 id = "quota"
 enabled = true
+colors = { text = "text_dim" }
 options = { show_5h = true, show_7d = true, show_spend = true, show_reset = true, bar = false, oauth_fallback = false, refresh_secs = 120 }
+
+[[segments]]
+id = "tps"
+enabled = true
+options = { stale_secs = 300, hide_when_stale = false }
 ```
 
-Segments appear in configuration order. Omitted segments are appended disabled. Generate a complete starting point with `cc-statusline init`.
+Segments appear in configuration order; omitted segments are appended disabled. Use `cc-statusline init` for a complete starting point. TPS can hide stale estimates with `hide_when_stale = true`; `stale_secs = 0` disables dimming.
 
-Themes: `claude`, `cometix`, `default`, `minimal`, `gruvbox`, `nord`, `powerline-dark`, `powerline-light`, `powerline-rose-pine`, `powerline-tokyo-night`. Save custom themes in `cc-statusline/themes/<name>.toml`.
+Colors accept palette names (`primary`, `accent`, `text_dim`, `success`, `warning`, `error`), `"#rrggbb"`, `{ c16 = 14 }`, `{ c256 = 208 }`, or `{ r = 1, g = 2, b = 3 }`. Custom palettes live in `palettes/<name>.json`, with a `base` (`dark` / `light`) and a `colors` object using camelCase names such as `textDim`.
 
-Colors accept palette tokens (`text`, `primary`, `accent`, `text_dim`, `text_muted`, `success`, `warning`, `error`), `"#rrggbb"`, `{ c16 = 14 }`, `{ c256 = 208 }`, or `{ r = 1, g = 2, b = 3 }`. Custom palettes live in `cc-statusline/palettes/<name>.json`, with `base` (`dark`/`light`) and a `colors` object using camelCase tokens such as `textDim`.
+Built-in themes: `claude`, `cometix`, `default`, `minimal`, `gruvbox`, `nord`, `powerline-dark`, `powerline-light`, `powerline-rose-pine`, `powerline-tokyo-night`.
 
-Optional model aliases in `cc-statusline/models.toml` map exact incoming display names or IDs to labels:
+Optional `~/.claude/cc-statusline/models.toml` maps exact incoming model display names or IDs to aliases:
 
 ```toml
 "claude-sonnet-custom" = "Team Sonnet"
 ```
 
-## Quota and offline operation
+</details>
 
-Native `rate_limits` is preferred and needs no extra request or credential read. Older clients can opt into `oauth_fallback = true`; `cc-statusline quota` also fetches explicitly. The fallback reads Claude's existing OAuth credentials (macOS Keychain, otherwise `.credentials.json`), contacts only `https://api.anthropic.com/api/oauth/usage`, and never rotates or writes login tokens. Failed refreshes retain cached data. API-key/third-party accounts can leave fallback disabled.
+<details>
+<summary>How quota works</summary>
 
-GitHub PR lookup uses `gh` in the background when Claude has not supplied `pr`; set the git segment's `pr = false` to disable it. Quota fallback also runs in the background. Set `NO_COLOR=1` or `CC_STATUSLINE_NO_COLOR=1` for plain output.
+Claude's native `rate_limits` takes precedence, without extra requests or credential reads. Older clients can enable `oauth_fallback = true`; background refreshes run no more often than `refresh_secs` (minimum 30 seconds). `cc-statusline quota` explicitly fetches the OAuth usage endpoint.
 
-Caches and last-observed preview payloads live in `~/.claude/cc-statusline-cache/`. Enable diagnostics with `CC_STATUSLINE_DEBUG=1`; logs go to `~/.claude/cc-statusline-debug.log`.
+The fallback uses Claude's existing OAuth credentials from macOS Keychain or `.credentials.json` and contacts `https://api.anthropic.com/api/oauth/usage`. It never refreshes or writes login tokens. Failed refreshes keep the last cached value; API-key and third-party accounts can leave fallback disabled.
 
-## Development
+PR lookup also runs in the background when Claude has not supplied a PR. Set the git segment's `pr = false` to disable lookup. Caches live in `~/.claude/cc-statusline-cache/`.
 
-```sh
+</details>
+
+<details>
+<summary>Commands, debugging, uninstall</summary>
+
+```bash
+cc-statusline                     # menu: configure, install, quota, update…
+cc-statusline config              # configurator
+cc-statusline init                # write default config; --force to replace
+cc-statusline themes              # list themes
+cc-statusline -t nord preview     # preview a theme
+cc-statusline preview --cwd /path/to/project --width 100
+cc-statusline quota               # fetch quota now
+cc-statusline update              # latest release; --check to check only
+cc-statusline uninstall           # remove our statusLine setting, then restart Claude
+```
+
+- Debug logs: `touch ~/.claude/cc-statusline-debug`, then read `~/.claude/cc-statusline-debug.log`. Alternatively set `CC_STATUSLINE_DEBUG=1`.
+- Disable colors with `NO_COLOR=1` or `CC_STATUSLINE_NO_COLOR=1`.
+- Try the example payload: `cargo run -- --theme claude --width 160 < examples/claude.json`.
+- Updates verify SHA256 checksums. Uninstall preserves unrelated settings and another application's status line.
+
+</details>
+
+## Contributing
+
+```bash
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --release --locked
+uv run --with pyte python scripts/screenshots.py
 ```
 
-CI runs formatting, Clippy, and tests on Linux, macOS, and Windows. Tag releases as `vX.Y.Z` matching Cargo.toml; the release workflow produces six platform archives and SHA256SUMS.
+The screenshot generator needs Chrome, ImageMagick and a Nerd Font, and runs on macOS/Linux with a PTY. Set `SHOT_CHROME` for another Chrome executable and `SHOT_FONT` for another font. With `pyte` installed, `python3 scripts/screenshots.py` also works. Images use synthetic data rendered by the actual binary and configurator, inside an HTML terminal frame.
 
-Protocol reference: [Claude Code status line documentation](https://code.claude.com/docs/en/statusline). Transcript deduplication and subagent layout were also checked against local Claude Code sources.
+To release: update `Cargo.toml` and `Cargo.lock`, then push a matching `vX.Y.Z` tag. CI checks Linux, macOS and Windows; the release workflow builds six platform archives and checksums.
 
-MIT. The original kimi-statusline copyright notice is retained in [LICENSE](LICENSE).
+Thanks to [kimi-statusline](https://github.com/Demogorgon314/kimi-statusline) (project foundation and README/screenshot design) and [CCometixLine](https://github.com/Haleclipse/CCometixLine) (configurator and themes). Protocol reference: [Claude Code status line documentation](https://code.claude.com/docs/en/statusline).
+
+## License
+
+MIT
