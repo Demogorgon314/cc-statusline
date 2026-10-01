@@ -87,11 +87,15 @@ impl Ctx {
 // ---------------------------------------------------------------------------
 
 pub fn fmt_tokens(n: u64) -> String {
-    match n {
-        0..=999 => n.to_string(),
-        1_000..=999_999 => format!("{:.1}k", n as f64 / 1e3),
-        _ => format!("{:.2}M", n as f64 / 1e6),
+    if n < 1_000 {
+        return n.to_string();
     }
+    // 999_950 would round up to "1000.0k"; promote it to M instead
+    let k = format!("{:.1}", n as f64 / 1e3);
+    if n < 1_000_000 && k != "1000.0" {
+        return format!("{k}k");
+    }
+    format!("{:.2}M", n as f64 / 1e6)
 }
 
 /// Modern providers sit at 95%+ almost always, so up there one decimal is
@@ -110,7 +114,7 @@ fn fmt_duration(secs: u64) -> String {
     match secs {
         0..=59 => format!("{secs}s"),
         60..=3599 => format!("{}m", secs / 60),
-        _ => format!("{}h{}m", secs / 3600, secs % 3600 / 60),
+        _ => format!("{}h{:02}m", secs / 3600, secs % 3600 / 60),
     }
 }
 
@@ -420,8 +424,9 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
             spans.push(plain(if compact { " " } else { " · " }));
         }
         let ratio = e.used_ratio.max(0.0);
-        // ceil like upstream usagePercent: any use shows at least 1%
-        let pct = (ratio * 100.0).ceil() as u32;
+        // ceil like upstream usagePercent: any use shows at least 1%; the
+        // epsilon keeps 0.07 * 100 = 7.000000000000001 from reading as 8%
+        let pct = (ratio * 100.0 - 1e-9).ceil().max(0.0) as u32;
         let tok = if ratio >= 0.85 {
             "error"
         } else if ratio >= 0.5 {
@@ -725,9 +730,15 @@ fn truncate(s: &str, width: usize, color: bool) -> String {
     let mut out = String::new();
     let mut used = 0;
     let mut i = 0;
+    let mut link_open = false;
     while i < s.len() {
         if let Some(n) = ansi_len(&s[i..]) {
-            out.push_str(&s[i..i + n]);
+            let seq = &s[i..i + n];
+            if let Some(rest) = seq.strip_prefix("\x1b]8;") {
+                // `ESC]8;;BEL` closes a link; anything with a URI opens one
+                link_open = !matches!(rest, ";\x07" | ";\x1b\\");
+            }
+            out.push_str(seq);
             i += n;
             continue;
         }
@@ -741,6 +752,9 @@ fn truncate(s: &str, width: usize, color: bool) -> String {
         i += ch.len_utf8();
     }
     out.push('…');
+    if link_open {
+        out.push_str("\x1b]8;;\x07");
+    }
     if color {
         out.push_str(CLOSE_FG);
         out.push_str(CLOSE_BG);
@@ -807,6 +821,9 @@ mod tests {
         assert_eq!(fmt_tokens(999), "999");
         assert_eq!(fmt_tokens(12_345), "12.3k");
         assert_eq!(fmt_tokens(1_234_567), "1.23M");
+        assert_eq!(fmt_tokens(999_949), "999.9k");
+        assert_eq!(fmt_tokens(999_950), "1.00M");
+        assert_eq!(fmt_duration(3_900), "1h05m");
         assert_eq!(fmt_rate(97.84), "97.8%");
         assert_eq!(fmt_rate(99.99), "99.9%");
         assert_eq!(fmt_rate(100.0), "100%");
@@ -822,6 +839,46 @@ mod tests {
             visible_width(&truncate("\x1b[34mabcdef\x1b[39m", 4, false)),
             4
         );
+    }
+
+    #[test]
+    fn truncation_closes_a_cut_hyperlink() {
+        let line = "ab \x1b]8;;https://x/1\x07[PR#1]\x1b]8;;\x07";
+        let cut = truncate(line, 6, false);
+        assert!(cut.ends_with("…\x1b]8;;\x07"), "{cut:?}");
+        assert!(!truncate("abcdef", 4, false).contains("\x1b]8"));
+    }
+
+    #[test]
+    fn quota_percent_is_not_inflated_by_float_error() {
+        for (used, shown) in [(7.0, "7%"), (56.0, "56%"), (0.2, "1%"), (0.0, "0%")] {
+            let mut config = crate::themes::builtin("claude").unwrap();
+            config.segments.retain(|s| s.id == SegmentId::Quota);
+            config.segments[0]
+                .options
+                .insert("show_reset".into(), false.into());
+            let ctx = Ctx {
+                payload: Payload::default(),
+                config,
+                palette: crate::appearance::DARK,
+                models: Models::default(),
+                stats: None,
+                tps: None,
+                effort: None,
+                session_created: None,
+                git: None,
+                pr: None,
+                quota: Some(crate::quota::from_payload(
+                    &serde_json::json!({"five_hour":{"used_percentage":used}}),
+                )),
+                now: 0.0,
+                color: false,
+            };
+            assert!(
+                render(&ctx, None).ends_with(&format!("5h {shown}")),
+                "{used}"
+            );
+        }
     }
 
     #[test]

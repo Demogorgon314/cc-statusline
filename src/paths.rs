@@ -53,12 +53,61 @@ pub fn debug(msg: &str) {
     {
         return;
     }
+    log(msg);
+}
+
+/// Append to the debug log unconditionally (for failures worth keeping).
+pub fn log(msg: &str) {
     if let Ok(mut f) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(home.join("cc-statusline-debug.log"))
+        .open(claude_home().join("cc-statusline-debug.log"))
     {
         let _ = writeln!(f, "{:.3} {msg}", now_secs());
+    }
+}
+
+/// Per-session and per-directory cache files nobody has touched for this
+/// long belong to finished sessions or deleted checkouts.
+const CACHE_MAX_AGE_SECS: u64 = 14 * 86_400;
+const SWEEP_EVERY_SECS: u64 = 86_400;
+
+/// Delete abandoned cache files, at most once a day. Shared files
+/// (`quota.json`, `update.json`, locks) are never touched.
+pub fn sweep_cache() {
+    let dir = cache_dir();
+    let stamp = dir.join("sweep.stamp");
+    let age = |p: &std::path::Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs())
+    };
+    if age(&stamp).is_some_and(|a| a < SWEEP_EVERY_SECS) {
+        return;
+    }
+    let _ = std::fs::write(&stamp, b"");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let max_age = if name.ends_with(".tmp") {
+            // orphaned by a write_atomic killed between create and rename
+            3600
+        } else if ["session-", "tps-", "preview-", "git-", "pr-"]
+            .iter()
+            .any(|p| name.starts_with(p))
+        {
+            CACHE_MAX_AGE_SECS
+        } else {
+            continue;
+        };
+        if age(&entry.path()).is_some_and(|a| a > max_age) {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 

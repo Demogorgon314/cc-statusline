@@ -31,7 +31,18 @@ struct Sampler {
     last: Option<Estimate>,
 }
 
+/// How stale the stored `observed_at` may get before an idle refresh rewrites it.
+const REWRITE_IDLE_SECS: f64 = 60.0;
+
 impl Sampler {
+    /// Everything but `observed_at`.
+    fn state(&self) -> String {
+        format!(
+            "{}\0{}\0{:?}\0{:?}\0{:?}",
+            self.source, self.model, self.baseline, self.observed, self.last
+        )
+    }
+
     fn new(source: &str, model: &str, counters: Counters, now: f64) -> Self {
         Self {
             source: source.into(),
@@ -100,11 +111,18 @@ pub fn get(payload: &Payload, stats: Option<&SessionStats>, now: f64) -> Option<
         output: stats.total.output,
         api_ms,
     };
+    let before = previous.as_ref().map(|s| (s.state(), s.observed_at));
     let mut sampler =
         previous.unwrap_or_else(|| Sampler::new(&stats.source, &payload.model, counters, now));
     sampler.observe(&stats.source, &payload.model, counters, now);
-    if let Ok(bytes) = serde_json::to_vec(&sampler) {
-        let _ = paths::write_atomic(&path, &bytes);
+    // idle refreshes only need to keep `observed_at` within MAX_SAMPLE_GAP_SECS
+    let unchanged = before.is_some_and(|(state, at)| {
+        state == sampler.state() && sampler.observed_at - at < REWRITE_IDLE_SECS
+    });
+    if !unchanged {
+        if let Ok(bytes) = serde_json::to_vec(&sampler) {
+            let _ = paths::write_atomic(&path, &bytes);
+        }
     }
     sampler.last
 }

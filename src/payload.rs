@@ -46,7 +46,9 @@ pub fn read_stdin(timeout: Duration) -> Payload {
                     "preview-{}.json",
                     crate::paths::short_hash(&payload.cwd)
                 ));
-                let _ = crate::paths::write_atomic(&cache, &buf);
+                if std::fs::read(&cache).ok().as_deref() != Some(&buf[..]) {
+                    let _ = crate::paths::write_atomic(&cache, &buf);
+                }
             }
             payload
         })

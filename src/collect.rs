@@ -6,7 +6,12 @@ use crate::render::Ctx;
 use crate::{paths, probe, session};
 use std::time::{Duration, Instant};
 
+/// Every optional probe shares this deadline, so their individual timeouts
+/// can't add up to a visibly late refresh.
+const DEADLINE: Duration = Duration::from_millis(300);
+
 pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
+    let deadline = started + DEADLINE;
     let palette = appearance::palette(
         (!config.style.palette.is_empty()).then_some(config.style.palette.as_str()),
     );
@@ -17,7 +22,7 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
         || wants(SegmentId::Session)
         || wants(SegmentId::Tps)
     {
-        session::collect(&payload.transcript_path, &payload.session_id)
+        session::collect(&payload.transcript_path, &payload.session_id, deadline)
     } else {
         None
     };
@@ -27,28 +32,24 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
         .or_else(|| stats.as_ref().and_then(|s| s.created));
     let git_seg = config.segment(SegmentId::Git).filter(|s| s.enabled);
     if git_seg.is_some() && !payload.cwd.is_empty() {
-        payload.git_branch = probe::run_with_timeout(
-            std::process::Command::new("git")
-                .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-                .current_dir(&payload.cwd),
-            Duration::from_millis(150),
-        )
-        .or_else(|| {
+        let git = |args: &[&str]| {
+            let left = deadline.checked_duration_since(Instant::now())?;
             probe::run_with_timeout(
                 std::process::Command::new("git")
-                    .args(["rev-parse", "--short", "HEAD"])
+                    .args(args)
                     .current_dir(&payload.cwd),
-                Duration::from_millis(150),
+                left.min(Duration::from_millis(150)),
             )
-        })
-        .map(|s| crate::payload::label(s.trim()))
-        .filter(|s| !s.is_empty());
+        };
+        payload.git_branch = probe::git_head(&payload.cwd)
+            .or_else(|| git(&["symbolic-ref", "--quiet", "--short", "HEAD"]))
+            .or_else(|| git(&["rev-parse", "--short", "HEAD"]))
+            .map(|s| crate::payload::label(s.trim()))
+            .filter(|s| !s.is_empty());
     }
     let git = git_seg
         .filter(|s| s.opt_bool("status", true) && payload.git_branch.is_some())
-        .and_then(|_| {
-            probe::git_status(&payload.cwd, started.elapsed() > Duration::from_millis(180))
-        });
+        .and_then(|_| probe::git_status(&payload.cwd, deadline));
     let pr = git_seg.filter(|s| s.opt_bool("pr", true)).and_then(|_| {
         payload.pr.clone().or_else(|| {
             payload

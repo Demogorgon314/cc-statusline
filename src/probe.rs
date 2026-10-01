@@ -86,18 +86,86 @@ pub struct GitStatus {
 
 const GIT_TTL: f64 = 15.0; // upstream STATUS_TTL_MS
 
-fn git(cwd: &str, args: &[&str]) -> Option<String> {
+fn git(cwd: &str, args: &[&str], deadline: Instant) -> Option<String> {
+    let left = deadline.checked_duration_since(Instant::now())?;
     run_with_timeout(
         Command::new("git")
             .arg("--no-optional-locks")
             .args(args)
             .current_dir(cwd),
-        Duration::from_millis(150),
+        left.min(Duration::from_millis(150)),
     )
 }
 
-fn probe_git(cwd: &str) -> Option<GitStatus> {
-    let out = git(cwd, &["status", "--porcelain=v1", "--branch"])?;
+/// Current branch (or short commit when detached) read straight from
+/// `HEAD`, saving a git process per refresh. None when the layout is not
+/// the plain one (`$GIT_DIR`, bare repos, ...): callers then ask git.
+pub fn git_head(cwd: &str) -> Option<String> {
+    if std::env::var_os("GIT_DIR").is_some() {
+        return None;
+    }
+    let mut dir = Some(Path::new(cwd));
+    while let Some(d) = dir {
+        let dot_git = d.join(".git");
+        if dot_git.is_dir() {
+            return read_head(&dot_git);
+        }
+        if dot_git.is_file() {
+            // worktrees and submodules: `gitdir: <path>`, relative to `d`
+            let text = std::fs::read_to_string(&dot_git).ok()?;
+            let gitdir = text.strip_prefix("gitdir:")?.trim();
+            return read_head(&d.join(gitdir));
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+fn read_head(git_dir: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(r) = head.strip_prefix("ref:") {
+        let r = r.trim();
+        return Some(r.strip_prefix("refs/heads/").unwrap_or(r).to_string());
+    }
+    (head.len() >= 7 && head.bytes().all(|b| b.is_ascii_hexdigit())).then(|| head[..7].to_string())
+}
+
+/// Untracked files are not in `git diff`; count their lines the way
+/// `git add -N` would, bounded so a stray dump can't stall the probe.
+fn untracked_lines(cwd: &str, deadline: Instant) -> u64 {
+    const MAX_FILES: usize = 200;
+    const MAX_BYTES: u64 = 1024 * 1024;
+    let Some(out) = git(
+        cwd,
+        &["ls-files", "--others", "--exclude-standard", "-z", ":/"],
+        deadline,
+    ) else {
+        return 0;
+    };
+    let mut total = 0;
+    for name in out.split('\0').filter(|n| !n.is_empty()).take(MAX_FILES) {
+        if Instant::now() > deadline {
+            break;
+        }
+        let Ok(f) = std::fs::File::open(Path::new(cwd).join(name)) else {
+            continue;
+        };
+        let mut data = Vec::new();
+        if std::io::Read::read_to_end(&mut std::io::Read::take(f, MAX_BYTES), &mut data).is_err()
+            || data.contains(&0)
+        {
+            continue; // binary, like numstat's "-"
+        }
+        let newlines = data.iter().filter(|b| **b == b'\n').count() as u64;
+        total += newlines + u64::from(data.last().is_some_and(|b| *b != b'\n'));
+    }
+    total
+}
+
+fn probe_git(cwd: &str, deadline: Instant) -> Option<GitStatus> {
+    let out = git(cwd, &["status", "--porcelain=v1", "--branch"], deadline)?;
+    let mut untracked = false;
     let mut st = GitStatus::default();
     for line in out.lines() {
         if let Some(head) = line.strip_prefix("##") {
@@ -115,6 +183,7 @@ fn probe_git(cwd: &str) -> Option<GitStatus> {
             st.behind = num("behind ").unwrap_or(0);
         } else if !line.is_empty() {
             st.dirty = true;
+            untracked |= line.starts_with("??");
             if matches!(
                 line.get(..2),
                 Some("UU" | "AA" | "DD" | "AU" | "UA" | "DU" | "UD")
@@ -124,7 +193,7 @@ fn probe_git(cwd: &str) -> Option<GitStatus> {
         }
     }
     if st.dirty {
-        if let Some(ns) = git(cwd, &["diff", "--numstat", "HEAD"]) {
+        if let Some(ns) = git(cwd, &["diff", "--numstat", "HEAD"], deadline) {
             for line in ns.lines() {
                 let mut parts = line.split('\t');
                 st.added += parts
@@ -137,19 +206,22 @@ fn probe_git(cwd: &str) -> Option<GitStatus> {
                     .unwrap_or(0);
             }
         }
+        if untracked {
+            st.added += untracked_lines(cwd, deadline);
+        }
     }
     Some(st)
 }
 
-/// Working-tree status for `cwd`, refreshed at most every 15s. When the run
-/// is already over budget the stale value is kept instead of spawning git.
-pub fn git_status(cwd: &str, over_budget: bool) -> Option<GitStatus> {
+/// Working-tree status for `cwd`, refreshed at most every 15s. Git only
+/// runs until `deadline`; past it the stale value is kept.
+pub fn git_status(cwd: &str, deadline: Instant) -> Option<GitStatus> {
     let name = format!("git-{}.json", paths::short_hash(cwd));
     let (prev, stale) = cached::<Option<GitStatus>>(&name, GIT_TTL);
-    if !stale || over_budget {
+    if !stale || Instant::now() + Duration::from_millis(20) > deadline {
         return prev.flatten();
     }
-    match probe_git(cwd) {
+    match probe_git(cwd, deadline) {
         Some(v) => {
             store(&name, &Some(v));
             Some(v)
@@ -288,6 +360,15 @@ pub struct PullRequest {
     pub url: String,
 }
 
+/// `gh pr view` also finds closed and merged PRs for the branch.
+#[derive(Deserialize)]
+struct GhPr {
+    number: u64,
+    url: String,
+    #[serde(default)]
+    state: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct PrCache {
     t: f64,
@@ -343,14 +424,19 @@ pub fn pull_request(cwd: &str, branch: &str) -> Option<PullRequest> {
             .map_or(0.0, |d| d.as_secs_f64());
         let parsed = std::fs::read(&out)
             .ok()
-            .and_then(|b| serde_json::from_slice::<PullRequest>(&b).ok());
+            .and_then(|b| serde_json::from_slice::<GhPr>(&b).ok());
         // gh writes its one-line JSON as it exits: parseable means done; an
         // old unparseable file means no PR / gh failed; a young one is still
         // in flight
         if parsed.is_some() || paths::now_secs() - finished > 30.0 {
             let _ = std::fs::remove_file(&out);
             if cached.as_ref().is_none_or(|c| finished >= c.t) {
-                value = parsed;
+                value = parsed
+                    .filter(|pr| pr.state.as_deref().is_none_or(|s| s == "OPEN"))
+                    .map(|pr| PullRequest {
+                        number: pr.number,
+                        url: crate::payload::label(&pr.url),
+                    });
                 write(&value);
                 return value;
             }
@@ -374,7 +460,7 @@ fn spawn_gh(cwd: &str, out: &Path) {
         return;
     };
     let mut cmd = Command::new(gh);
-    cmd.args(["pr", "view", "--json", "number,url"])
+    cmd.args(["pr", "view", "--json", "number,url,state"])
         .current_dir(cwd)
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .env("GH_PROMPT_DISABLED", "1")
@@ -395,4 +481,31 @@ fn spawn_gh(cwd: &str, out: &Path) {
         cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
     }
     let _ = cmd.spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn head_is_read_without_git() {
+        let root = std::env::temp_dir().join(format!("ccs-head-{}", std::process::id()));
+        let git_dir = root.join("repo/.git");
+        let sub = root.join("repo/src/deep");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feat/x\n").unwrap();
+        assert_eq!(git_head(sub.to_str().unwrap()).as_deref(), Some("feat/x"));
+        std::fs::write(git_dir.join("HEAD"), "0123456789abcdef0123\n").unwrap();
+        assert_eq!(git_head(sub.to_str().unwrap()).as_deref(), Some("0123456"));
+        // linked worktree: `.git` is a file pointing at the real git dir
+        let wt = root.join("wt");
+        let wt_git = root.join("repo/.git/worktrees/wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(&wt_git).unwrap();
+        std::fs::write(wt_git.join("HEAD"), "ref: refs/heads/other\n").unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: ../repo/.git/worktrees/wt\n").unwrap();
+        assert_eq!(git_head(wt.to_str().unwrap()).as_deref(), Some("other"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

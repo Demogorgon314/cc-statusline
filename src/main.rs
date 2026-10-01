@@ -225,6 +225,9 @@ const BUDGET: Duration = Duration::from_millis(200);
 fn run_statusline(theme: Option<&str>, width_flag: Option<usize>) {
     let started = Instant::now();
     let payload = payload::read_stdin(Duration::from_millis(150));
+    // stderr is discarded by Claude Code; keep the panic where the fallback
+    // line points (written even without the debug flag)
+    std::panic::set_hook(Box::new(|info| paths::log(&format!("panic: {info}"))));
     // any panic still prints a line: a nonzero exit would make the TUI
     // freeze on the previous output with no hint of what went wrong
     let line = std::panic::catch_unwind(|| {
@@ -245,4 +248,6 @@ fn run_statusline(theme: Option<&str>, width_flag: Option<usize>) {
     .unwrap_or_else(|_| "cc-statusline: error (see cc-statusline-debug.log)".into());
     println!("{line}");
     paths::debug(&format!("done in {}ms", started.elapsed().as_millis()));
+    // after printing: housekeeping never delays the line
+    let _ = std::panic::catch_unwind(paths::sweep_cache);
 }

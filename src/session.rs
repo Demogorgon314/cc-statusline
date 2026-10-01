@@ -182,7 +182,7 @@ fn record(line: &[u8], cursor: &mut Cursor, session_id: &str) {
     entry.1.merge(usage);
 }
 
-pub fn collect(transcript: &str, session_id: &str) -> Option<SessionStats> {
+pub fn collect(transcript: &str, session_id: &str, deadline: Instant) -> Option<SessionStats> {
     if transcript.is_empty() || session_id.is_empty() {
         return None;
     }
@@ -216,23 +216,25 @@ pub fn collect(transcript: &str, session_id: &str) -> Option<SessionStats> {
         Err(_) => complete = false,
     }
     let start = Instant::now();
+    let mut changed = false;
     for file in &files {
-        if start.elapsed() > Duration::from_millis(100) {
+        if start.elapsed() > Duration::from_millis(100) || Instant::now() > deadline {
             complete = false;
             break;
         }
-        complete &= advance(
-            file,
-            cache
-                .files
-                .entry(file.to_string_lossy().into_owned())
-                .or_default(),
-            session_id,
-        );
+        let cursor = cache
+            .files
+            .entry(file.to_string_lossy().into_owned())
+            .or_default();
+        let before = (cursor.offset, cursor.revision, cursor.prefix.len());
+        complete &= advance(file, cursor, session_id);
+        changed |= before != (cursor.offset, cursor.revision, cursor.prefix.len());
     }
+    let known = cache.files.len();
     cache
         .files
         .retain(|name, _| files.iter().any(|p| p.to_string_lossy() == *name));
+    changed |= cache.files.len() != known;
     let sources: Vec<_> = cache
         .files
         .iter()
@@ -270,8 +272,11 @@ pub fn collect(transcript: &str, session_id: &str) -> Option<SessionStats> {
                 .add(usage);
         }
     }
-    if let Ok(data) = serde_json::to_vec(&cache) {
-        let _ = paths::write_atomic(&cache_path, &data);
+    // most refreshes find no new transcript bytes: skip rewriting the cache
+    if changed {
+        if let Ok(data) = serde_json::to_vec(&cache) {
+            let _ = paths::write_atomic(&cache_path, &data);
+        }
     }
     Some(stats)
 }
