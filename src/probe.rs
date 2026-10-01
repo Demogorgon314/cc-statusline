@@ -258,6 +258,7 @@ fn proc_info(pid: u32) -> Option<(u32, Option<String>)> {
 }
 
 /// Walk ancestors when this command has no controlling terminal.
+#[cfg(unix)]
 fn ancestor_tty_columns() -> Option<usize> {
     // SAFETY: getppid has no preconditions.
     let mut pid = unsafe { libc::getppid() } as u32;

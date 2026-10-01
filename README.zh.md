@@ -21,7 +21,7 @@
 curl -fsSL https://raw.githubusercontent.com/Demogorgon314/cc-statusline/main/install.sh | sh
 ```
 
-重启 Claude Code 即可加载状态栏。下载脚本需要已发布的 GitHub Release；首个版本发布前，请使用下面的源码安装方式。
+重启 Claude Code 即可加载状态栏。
 
 <details>
 <summary>Windows、手动配置或源码安装</summary>

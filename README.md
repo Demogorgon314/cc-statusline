@@ -21,7 +21,7 @@ English | [中文](README.zh.md)
 curl -fsSL https://raw.githubusercontent.com/Demogorgon314/cc-statusline/main/install.sh | sh
 ```
 
-Restart Claude Code to load the status line. The download scripts require a published GitHub release; before the first release, use the source instructions below.
+Restart Claude Code to load the status line.
 
 <details>
 <summary>Windows, manual configuration, or from source</summary>
