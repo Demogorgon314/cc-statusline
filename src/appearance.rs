@@ -1,70 +1,72 @@
-//! Read-only views of Kimi Code's own config: model display names and
-//! default efforts from `config.toml`, and the footer palette from `tui.toml`.
+//! Status line model aliases and independent dark/light/custom palettes.
 
-use crate::paths;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct Models {
     /// alias / provider model / display name -> display name
     pub names: HashMap<String, String>,
-    /// same keys -> default_effort
-    pub efforts: HashMap<String, String>,
-    /// same keys -> whether the model declares support_efforts
-    pub has_efforts: HashMap<String, bool>,
 }
 
 impl Models {
     pub fn load() -> Self {
-        let mut m = Models::default();
-        let Ok(text) = std::fs::read_to_string(paths::kimi_home().join("config.toml")) else {
-            return m;
-        };
-        let Ok(doc) = text.parse::<toml::Table>() else {
-            paths::debug("config.toml did not parse");
-            return m;
-        };
-        let Some(models) = doc.get("models").and_then(|v| v.as_table()) else {
-            return m;
-        };
-        for (alias, entry) in models {
-            let Some(entry) = entry.as_table() else {
-                continue;
-            };
-            // [models."x".overrides] wins over the base section
-            let overrides = entry.get("overrides").and_then(|v| v.as_table());
-            let get = |k: &str| overrides.and_then(|o| o.get(k)).or_else(|| entry.get(k));
-            let s = |k: &str| get(k).and_then(|v| v.as_str()).map(str::to_string);
-            let display = s("display_name");
-            let provider_model = s("model");
-            let effort = s("default_effort");
-            let supports = get("support_efforts")
-                .and_then(|v| v.as_array())
-                .is_some_and(|a| !a.is_empty());
-            let keys: Vec<String> = [Some(alias.clone()), provider_model, display.clone()]
-                .into_iter()
-                .flatten()
-                .collect();
-            for k in keys {
-                if let Some(d) = &display {
-                    m.names.entry(k.clone()).or_insert_with(|| d.clone());
-                }
-                if let Some(e) = &effort {
-                    m.efforts.entry(k.clone()).or_insert_with(|| e.clone());
-                }
-                m.has_efforts.entry(k).or_insert(supports);
-            }
-        }
-        m
+        // Optional exact model-id aliases, separate from Claude's own settings.
+        std::fs::read_to_string(crate::config::config_dir().join("models.toml"))
+            .ok()
+            .and_then(|s| toml::from_str::<std::collections::HashMap<String, String>>(&s).ok())
+            .map(|names| Self { names })
+            .unwrap_or_default()
     }
 
     /// Display name for any spelling, falling back to the last path segment
-    /// (`kimi-code/k3-256k` -> `k3-256k`).
+    /// (provider/model -> model).
     pub fn display(&self, model: &str) -> String {
         self.names
             .get(model)
             .cloned()
-            .unwrap_or_else(|| model.rsplit('/').next().unwrap_or(model).to_string())
+            .unwrap_or_else(|| model_label(model))
+    }
+}
+
+fn model_label(model: &str) -> String {
+    let model = model.rsplit('/').next().unwrap_or(model);
+    let Some(id) = model.strip_prefix("claude-") else {
+        return model.to_string();
+    };
+    let base = id.split('[').next().unwrap_or(id);
+    let parts: Vec<_> = base.split('-').collect();
+    let family = parts.iter().find_map(|part| match *part {
+        "sonnet" => Some("Sonnet"),
+        "opus" => Some("Opus"),
+        "haiku" => Some("Haiku"),
+        _ => None,
+    });
+    let Some(family) = family else {
+        return model.to_string();
+    };
+    let version = parts
+        .iter()
+        .filter(|p| !p.is_empty() && p.len() <= 2 && p.bytes().all(|b| b.is_ascii_digit()))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(".");
+    let suffix = if id.contains("[1m]") { " 1M" } else { "" };
+    if version.is_empty() {
+        format!("{family}{suffix}")
+    } else {
+        format!("{family} {version}{suffix}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn model_versions_ignore_release_dates_and_preserve_unknown_providers() {
+        assert_eq!(model_label("claude-3-5-sonnet-20241022"), "Sonnet 3.5");
+        assert_eq!(model_label("claude-opus-4-6[1m]"), "Opus 4.6 1M");
+        assert_eq!(model_label("provider/custom-model"), "custom-model");
+        assert_eq!(model_label("Opus 4.6"), "Opus 4.6");
     }
 }
 
@@ -74,7 +76,7 @@ pub struct Rgb(pub u8, pub u8, pub u8);
 impl Rgb {
     pub fn parse(hex: &str) -> Option<Rgb> {
         let h = hex.strip_prefix('#')?;
-        if h.len() != 6 {
+        if h.len() != 6 || !h.is_ascii() {
             return None;
         }
         let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
@@ -132,18 +134,11 @@ impl Palette {
             _ => return None,
         })
     }
-
-    pub fn is_light(&self) -> bool {
-        self.text == LIGHT.text
-    }
 }
 
-/// Resolve the palette like upstream's getColorPalette: "light"/"dark" are
-/// built in, any other name is `themes/<name>.json` merged over its base, and
-/// "auto" collapses to dark (the background probe can't run over a pipe).
-/// `override_theme` comes from our own settings and wins over tui.toml.
+/// Resolve a built-in palette or a JSON file in cc-statusline/palettes/.
 pub fn palette(override_theme: Option<&str>) -> Palette {
-    let theme = override_theme.map(str::to_string).or_else(tui_theme);
+    let theme = override_theme.map(str::to_string);
     match theme.as_deref() {
         None | Some("auto") | Some("dark") => DARK,
         Some("light") => LIGHT,
@@ -151,15 +146,9 @@ pub fn palette(override_theme: Option<&str>) -> Palette {
     }
 }
 
-fn tui_theme() -> Option<String> {
-    let text = std::fs::read_to_string(paths::kimi_home().join("tui.toml")).ok()?;
-    let doc = text.parse::<toml::Table>().ok()?;
-    doc.get("theme")?.as_str().map(str::to_string)
-}
-
 fn custom_palette(name: &str) -> Option<Palette> {
-    let path = paths::kimi_home()
-        .join("themes")
+    let path = crate::config::config_dir()
+        .join("palettes")
         .join(format!("{name}.json"));
     let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let mut p = if v.get("base").and_then(|b| b.as_str()) == Some("light") {

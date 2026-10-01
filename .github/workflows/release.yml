@@ -34,26 +34,26 @@ jobs:
           set -e
           out="target/${{ matrix.target }}/release"
           if [[ "${{ matrix.target }}" == *windows* ]]; then
-            (cd "$out" && 7z a "$GITHUB_WORKSPACE/kimi-statusline-${{ matrix.name }}.zip" kimi-statusline.exe)
+            (cd "$out" && 7z a "$GITHUB_WORKSPACE/cc-statusline-${{ matrix.name }}.zip" cc-statusline.exe)
           else
-            tar -czf "kimi-statusline-${{ matrix.name }}.tar.gz" -C "$out" kimi-statusline
+            tar -czf "cc-statusline-${{ matrix.name }}.tar.gz" -C "$out" cc-statusline
           fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: kimi-statusline-${{ matrix.name }}.*
+          path: cc-statusline-${{ matrix.name }}.*
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: plugin version matches tag
+      - name: version matches tag
+        shell: bash
         run: |
-          v=$(jq -r .version kimi.plugin.json)
-          c=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          [ "v$v" = "$GITHUB_REF_NAME" ] && [ "v$c" = "$GITHUB_REF_NAME" ] || {
-            echo "tag $GITHUB_REF_NAME vs kimi.plugin.json $v / Cargo.toml $c"; exit 1; }
+          c=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          [ "v$c" = "$GITHUB_REF_NAME" ] || {
+            echo "tag $GITHUB_REF_NAME vs Cargo.toml $c"; exit 1; }
       - uses: actions/download-artifact@v4
         with:
           path: dist

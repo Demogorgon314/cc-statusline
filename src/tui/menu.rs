@@ -80,20 +80,23 @@ const ITEMS: [(&str, &str); 9] = [
         "Configuration Mode",
         "Edit segments, colors, icons and themes",
     ),
-    ("Initialize Config", "Write config.toml from the kimi theme"),
+    (
+        "Initialize Config",
+        "Write config.toml from the claude theme",
+    ),
     ("Check Configuration", "Validate config.toml"),
     (
-        "Install to Kimi Code",
-        "Set [status_line].command in tui.toml",
+        "Install to Claude Code",
+        "Set [status_line].command in settings.json",
     ),
     (
-        "Uninstall from Kimi Code",
+        "Uninstall from Claude Code",
         "Remove our [status_line].command",
     ),
     ("Test Quota", "Fetch 5h / 7d plan quota now"),
     ("Check for Updates", "Look for a newer release on GitHub"),
     ("About", "Show application information"),
-    ("Exit", "Leave kimi-statusline"),
+    ("Exit", "Leave cc-statusline"),
 ];
 const UPDATE_ITEM: usize = 6;
 
@@ -141,7 +144,7 @@ impl Menu {
                 Ok(v) => {
                     self.available = None;
                     self.ok(format!(
-                        "✓ Updated to {v} (checksum verified). Restart kimi-statusline to use it here; the status line already does"
+                        "✓ Updated to {v} (checksum verified). Restart cc-statusline to use it here; the status line already does"
                     ))
                 }
                 Err(e) => self.err(format!("✗ Update failed: {e}")),
@@ -160,7 +163,7 @@ impl Menu {
             Ok(_) => {
                 self.available = None;
                 self.ok(format!(
-                    "✓ kimi-statusline v{} is up to date",
+                    "✓ cc-statusline v{} is up to date",
                     update::CURRENT
                 ));
             }
@@ -264,7 +267,7 @@ impl Menu {
                 if path.exists() {
                     self.ok(format!("Config already exists at {}", path.display()));
                 } else {
-                    match themes::get("kimi").save() {
+                    match themes::get("claude").save() {
                         Ok(()) => self.ok(format!("✓ Created {}", path.display())),
                         Err(e) => self.err(format!("✗ {e}")),
                     }
@@ -277,16 +280,16 @@ impl Menu {
                     c.segments.iter().filter(|s| s.enabled).count(),
                     c.segments.len()
                 )),
-                Err(e) if e.is_empty() => self.ok("No config.toml yet: the kimi theme is used"),
+                Err(e) if e.is_empty() => self.ok("No config.toml yet: the claude theme is used"),
                 Err(e) => self.err(format!("✗ Invalid config.toml: {e}")),
             },
-            3 => match install::install(None, false, false) {
-                Ok(o) if o.changed => self.ok("✓ Installed. Run /reload-tui in Kimi Code"),
+            3 => match install::install(None, false) {
+                Ok(o) if o.changed => self.ok("✓ Installed. Restart Claude Code"),
                 Ok(_) => self.ok("Already installed"),
                 Err(e) => self.err(format!("✗ {e}")),
             },
             4 => match install::uninstall() {
-                Ok(true) => self.ok("✓ Removed. Run /reload-tui in Kimi Code"),
+                Ok(true) => self.ok("✓ Removed. Restart Claude Code"),
                 Ok(false) => self.ok("Nothing to remove"),
                 Err(e) => self.err(format!("✗ {e}")),
             },
@@ -297,10 +300,10 @@ impl Menu {
                             .map_or("-".into(), |e| format!("{:.0}%", e.used_ratio * 100.0))
                     };
                     self.ok(format!(
-                        "✓ 5h {}  ·  7d {}  ·  monthly {}",
+                        "✓ 5h {}  ·  7d {}  ·  spend {}",
                         f(&q.limit_5h),
                         f(&q.limit_7d),
-                        f(&q.month)
+                        f(&q.spend)
                     ))
                 }
                 Err(e) => self.err(format!("✗ {e}")),
@@ -338,7 +341,7 @@ impl Menu {
             Paragraph::new(vec![
                 Line::from(vec![
                     Span::styled(
-                        "kimi-statusline",
+                        "cc-statusline",
                         Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(" v", Style::new().fg(Color::Gray)),
@@ -353,7 +356,7 @@ impl Menu {
                 ]),
                 Line::from(""),
                 Line::styled(
-                    "High-performance Kimi Code status line",
+                    "High-performance Claude Code status line",
                     Style::new().fg(Color::Gray),
                 ),
                 Line::styled(
@@ -465,11 +468,11 @@ impl Menu {
             let label = |t: &'static str| Span::styled(t, Style::new().fg(Color::Gray));
             let lines = vec![
                 Line::styled(
-                    format!("kimi-statusline v{}", env!("CARGO_PKG_VERSION")),
+                    format!("cc-statusline v{}", env!("CARGO_PKG_VERSION")),
                     Style::new().fg(Color::Cyan),
                 ),
                 Line::from(""),
-                Line::from("Status line for Kimi Code CLI: session tokens, cache"),
+                Line::from("Status line for Claude Code: session tokens, cache"),
                 Line::from("hit rate, sub-agents, 5h / 7d quota, git + PR, themes."),
                 Line::from(""),
                 Line::from(vec![label("GitHub: "), link(REPO)]),

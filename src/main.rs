@@ -1,16 +1,9 @@
-//! kimi-statusline: a status line command for Kimi Code CLI (>= 0.30.0).
-//!
-//! The TUI spawns `[status_line].command` at most once a second with a JSON
-//! snapshot on stdin, kills it after 300ms, and renders the first stdout line
-//! in place of footer line 1. We add what the snapshot lacks — session token
-//! usage, cache hit rate, sub-agent usage, swarm/tower modes, thinking effort,
-//! goal and task badges, git diff stats, the PR badge, /dance — from the
-//! session files on disk.
+//! Claude Code status line: stdin JSON, local transcript accounting and an interactive configurator.
 
+mod appearance;
 mod collect;
 mod config;
 mod install;
-mod kimi_config;
 mod paths;
 mod payload;
 mod probe;
@@ -22,15 +15,15 @@ mod tui;
 mod update;
 
 use clap::{Parser, Subcommand};
-use config::{Config, SegmentId};
+use config::Config;
 use std::io::IsTerminal;
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(
-    name = "kimi-statusline",
+    name = "cc-statusline",
     version,
-    about = "High-performance status line for Kimi Code CLI"
+    about = "High-performance status line for Claude Code"
 )]
 struct Cli {
     /// Render with a theme instead of the saved config
@@ -39,10 +32,6 @@ struct Cli {
     /// Render width for status line mode (default: detect the terminal)
     #[arg(long, global = true)]
     width: Option<usize>,
-    /// Running as the kimi-statusline plugin: stand down once the plugin is
-    /// disabled or removed
-    #[arg(long, hide = true)]
-    plugin: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -51,28 +40,25 @@ struct Cli {
 enum Cmd {
     /// Interactive configurator (running with no arguments opens the menu)
     Config,
-    /// Set this binary as [status_line].command in tui.toml
+    /// Set this binary as statusLine.command in settings.json
     Install {
         /// Command to write instead of this binary's path
         #[arg(long)]
         command: Option<String>,
-        /// Replace an existing non-kimi-statusline command
+        /// Replace an existing non-cc-statusline command
         #[arg(long)]
         force: bool,
-        /// Plugin hook mode: silent, and the command polices the plugin state
-        #[arg(long)]
-        plugin: bool,
     },
-    /// Remove our [status_line].command from tui.toml
+    /// Remove our statusLine from settings.json
     Uninstall,
-    /// Write the config file from a theme (default: kimi)
+    /// Write the config file from a theme (default: claude)
     Init {
         #[arg(long)]
         force: bool,
     },
     /// List themes
     Themes,
-    /// Fetch plan quota now and print it (5h / 7d / monthly)
+    /// Fetch plan quota now and print it (5h / 7d)
     Quota,
     /// Check GitHub for a newer release and install it
     Update {
@@ -83,12 +69,12 @@ enum Cmd {
     /// Background quota refresh, spawned by the status line
     #[command(hide = true)]
     FetchQuota,
-    /// Render for the newest session in a directory, without the TUI
+    /// Render for the last observed session in a directory, without the TUI
     Preview {
         /// Working directory of the session (default: current dir)
         #[arg(long)]
         cwd: Option<String>,
-        /// Session id (default: newest session for --cwd)
+        /// Session id (default: last observed session for --cwd)
         #[arg(long)]
         session: Option<String>,
         /// Render width (default: full line)
@@ -101,16 +87,12 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Some(Cmd::Config) => tui::run_configurator(),
-        Some(Cmd::Install {
-            command,
-            force,
-            plugin,
-        }) => install_cmd(command, force, plugin),
+        Some(Cmd::Install { command, force }) => install_cmd(command, force),
         Some(Cmd::Uninstall) => install::uninstall().map(|changed| {
             if changed {
-                println!("Removed kimi-statusline from tui.toml; run /reload-tui to apply.");
+                println!("Removed cc-statusline from settings.json; restart Claude Code to apply.");
             } else {
-                println!("status_line.command is not kimi-statusline; nothing to do.");
+                println!("statusLine.command is not cc-statusline; nothing to do.");
             }
         }),
         Some(Cmd::Init { force }) => init(cli.theme.as_deref(), force),
@@ -136,7 +118,7 @@ fn main() {
                 };
                 show("5h", &q.limit_5h);
                 show("7d", &q.limit_7d);
-                show("monthly", &q.month);
+                show("spend", &q.spend);
             })
             .map_err(|e| match quota::last_error() {
                 Some(last) if last != e => format!("{e} (previous: {last})"),
@@ -160,7 +142,7 @@ fn main() {
         }
         None if std::io::stdin().is_terminal() => tui::run_menu(),
         None => {
-            run_statusline(cli.theme.as_deref(), cli.plugin, cli.width);
+            run_statusline(cli.theme.as_deref(), cli.width);
             Ok(())
         }
     };
@@ -173,7 +155,7 @@ fn main() {
 fn update_cmd(check_only: bool) -> Result<(), String> {
     let latest = update::check_now()?;
     if !update::is_newer(&latest, update::CURRENT) {
-        println!("kimi-statusline {} is up to date", update::CURRENT);
+        println!("cc-statusline {} is up to date", update::CURRENT);
         return Ok(());
     }
     println!("Update available: {} → {latest}", update::CURRENT);
@@ -207,14 +189,12 @@ fn load_config(theme: Option<&str>) -> Config {
     }
 }
 
-fn install_cmd(command: Option<String>, force: bool, plugin: bool) -> Result<(), String> {
-    match install::install(command, force, plugin) {
-        // hook stdout may end up in model context: say nothing
-        _ if plugin => Ok(()),
+fn install_cmd(command: Option<String>, force: bool) -> Result<(), String> {
+    match install::install(command, force) {
         Ok(o) => {
             if o.changed {
-                println!("Installed: [status_line].command = {:?}", o.command);
-                println!("Run /reload-tui in Kimi Code (or restart it) to apply.");
+                println!("Installed: statusLine.command = {:?}", o.command);
+                println!("Restart Claude Code to apply.");
             } else {
                 println!("Already installed.");
             }
@@ -233,33 +213,21 @@ fn init(theme: Option<&str>, force: bool) -> Result<(), String> {
         );
         return Ok(());
     }
-    themes::get(theme.unwrap_or("kimi")).save()?;
+    themes::get(theme.unwrap_or("claude")).save()?;
     println!("Wrote {}", path.display());
     Ok(())
 }
 
-/// Leave this much of the TUI's 300ms for rendering and exit.
+/// Skip optional probes once the foreground rendering budget is exhausted.
 const BUDGET: Duration = Duration::from_millis(200);
 
-fn run_statusline(theme: Option<&str>, plugin: bool, width_flag: Option<usize>) {
+fn run_statusline(theme: Option<&str>, width_flag: Option<usize>) {
     let started = Instant::now();
     let payload = payload::read_stdin(Duration::from_millis(150));
     // any panic still prints a line: a nonzero exit would make the TUI
     // freeze on the previous output with no hint of what went wrong
     let line = std::panic::catch_unwind(|| {
-        let mut config = load_config(theme);
-        if plugin && install::plugin_inactive() {
-            // The plugin was disabled or removed: take our command out of
-            // tui.toml so the next /reload-tui gets the built-in footer, and
-            // until then render the built-in look without the usage half
-            // instead of freezing on a stale line.
-            paths::debug("plugin inactive; removing tui.toml command");
-            let _ = install::uninstall();
-            config = themes::get("kimi");
-            config
-                .segments
-                .retain(|s| !matches!(s.id, SegmentId::Usage | SegmentId::Subagent));
-        }
+        let config = load_config(theme);
         let width = if let Some(w) = width_flag {
             Some(w)
         } else if config.style.width > 0 {
@@ -273,7 +241,7 @@ fn run_statusline(theme: Option<&str>, plugin: bool, width_flag: Option<usize>) 
         let ctx = collect::collect(payload, config, started);
         render::render(&ctx, width)
     })
-    .unwrap_or_else(|_| "kimi-statusline: error (see kimi-statusline-debug.log)".into());
+    .unwrap_or_else(|_| "cc-statusline: error (see cc-statusline-debug.log)".into());
     println!("{line}");
     paths::debug(&format!("done in {}ms", started.elapsed().as_millis()));
 }

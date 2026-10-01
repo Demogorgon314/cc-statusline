@@ -1,16 +1,16 @@
 [package]
-name = "kimi-statusline"
-version = "0.4.1"
+name = "cc-statusline"
+version = "0.1.0"
 edition = "2021"
-description = "High-performance status line for Kimi Code CLI, written in Rust"
+description = "High-performance status line for Claude Code, written in Rust"
 license = "MIT"
-repository = "https://github.com/Demogorgon314/kimi-statusline"
+repository = "https://github.com/Demogorgon314/cc-statusline"
 readme = "README.md"
-keywords = ["kimi", "statusline", "kimi-code", "cli"]
+keywords = ["claude", "statusline", "claude-code", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "kimi-statusline"
+name = "cc-statusline"
 path = "src/main.rs"
 
 [dependencies]
@@ -18,9 +18,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
-toml_edit = "0.25"
 unicode-width = "0.2"
-md5 = "0.7"
 ratatui = "0.30"
 crossterm = "0.29"
 ansi-to-tui = "8"

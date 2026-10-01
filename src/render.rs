@@ -1,16 +1,16 @@
 //! Segment rendering and width fitting.
 //!
 //! Each segment yields spans; a span may carry its own color (the cache-rate
-//! ramp, mode badges, the /dance rainbow…), otherwise it takes the segment's
+//! ramp or mode badges), otherwise it takes the segment's
 //! text color. Styles are closed with `ESC[22m ESC[39m` / `ESC[49m` rather
 //! than a full reset: the TUI wraps the line in chalk.hex(colors.text), and
 //! chalk re-opens its color at each of its own close codes, whereas `ESC[0m`
 //! would leave the rest of the line in the terminal's default foreground.
 
+use crate::appearance::{Models, Palette, Rgb};
 use crate::config::{AnsiColor, Config, Lang, SegmentConfig, SegmentId, StyleMode};
-use crate::kimi_config::{Models, Palette, Rgb};
 use crate::payload::Payload;
-use crate::probe::{Dance, GitStatus, PullRequest};
+use crate::probe::{GitStatus, PullRequest};
 use crate::session::{SessionStats, Usage};
 use unicode_width::UnicodeWidthChar;
 
@@ -28,13 +28,9 @@ pub struct Ctx {
     pub stats: Option<SessionStats>,
     /// effort from the wire, else the model's default_effort
     pub effort: Option<serde_json::Value>,
-    pub goal: Option<serde_json::Value>,
-    pub goal_seen_at: Option<f64>,
     pub session_created: Option<f64>,
-    pub tasks: (u32, u32),
     pub git: Option<GitStatus>,
     pub pr: Option<PullRequest>,
-    pub dance: Option<Dance>,
     pub quota: Option<crate::quota::Quota>,
     pub now: f64,
     pub color: bool,
@@ -181,72 +177,16 @@ pub fn shorten_cwd(path: &str, depth: usize) -> String {
     format!("…/{}", segs[segs.len() - depth..].join("/"))
 }
 
-fn version_tuple(v: &str) -> Option<(u32, u32, u32)> {
-    let mut parts = v.split('.').map(|p| {
-        p.chars()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .parse::<u32>()
-            .ok()
-    });
-    Some((
-        parts.next()??,
-        parts.next().flatten().unwrap_or(0),
-        parts.next().flatten().unwrap_or(0),
-    ))
-}
-
 /// OSC 8 hyperlink, like upstream toTerminalHyperlink (http(s) only).
 fn hyperlink(text: &str, url: &str) -> String {
-    if url.starts_with("https://") || url.starts_with("http://") {
+    if !url.chars().any(char::is_control)
+        && (url.starts_with("https://") || url.starts_with("http://"))
+    {
         format!("\x1b]8;;{url}\x07{text}\x1b]8;;\x07")
     } else {
         text.to_string()
     }
 }
-
-// /dance palettes from upstream src/tui/easter-eggs/dance.ts
-const DARK_RAINBOW: [Rgb; 8] = [
-    Rgb(0x4F, 0xA8, 0xFF),
-    Rgb(0x5B, 0xC0, 0xBE),
-    Rgb(0x4E, 0xC8, 0x7E),
-    Rgb(0xE8, 0xA8, 0x38),
-    Rgb(0xFF, 0xCB, 0x6B),
-    Rgb(0xC6, 0x78, 0xB8),
-    Rgb(0xA2, 0x74, 0xD9),
-    Rgb(0x7C, 0x8D, 0xFF),
-];
-const LIGHT_RAINBOW: [Rgb; 9] = [
-    Rgb(0x15, 0x65, 0xC0),
-    Rgb(0x00, 0x83, 0x8F),
-    Rgb(0x0E, 0x7A, 0x38),
-    Rgb(0x92, 0x66, 0x0A),
-    Rgb(0x9A, 0x4A, 0x00),
-    Rgb(0xB9, 0x1C, 0x1C),
-    Rgb(0x8A, 0x3A, 0x75),
-    Rgb(0x6B, 0x3A, 0x9A),
-    Rgb(0x35, 0x4C, 0xB5),
-];
-
-/// Upstream rainbowText: one palette step per non-space character.
-fn rainbow(text: &str, phase: usize, light: bool) -> Vec<Span> {
-    let palette: &[Rgb] = if light { &LIGHT_RAINBOW } else { &DARK_RAINBOW };
-    let mut i = phase;
-    text.chars()
-        .map(|ch| {
-            if ch == ' ' {
-                return plain(" ");
-            }
-            let c = palette[i % palette.len()];
-            i += 1;
-            colored(ch.to_string(), rgb(c))
-        })
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// segments
-// ---------------------------------------------------------------------------
 
 /// The spans of one segment, or None when it has nothing to show. `compact`
 /// trims labels and units for narrow terminals.
@@ -254,102 +194,22 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
     let p = &ctx.payload;
     let zh = ctx.zh();
     match seg.id {
-        SegmentId::Mode => {
-            // pre-0.40.0 TUIs drew the raw mode names
-            let legacy = version_tuple(&p.version).is_some_and(|v| v < (0, 40, 0));
-            let mut names = Vec::new();
-            match p.permission_mode.as_str() {
-                "auto" => names.push((if legacy { "auto" } else { "Never Ask" }, "warning")),
-                "yolo" => names.push((if legacy { "yolo" } else { "Ask When Needed" }, "warning")),
-                _ => {}
-            }
-            if p.plan_mode {
-                names.push(("plan", "primary"));
-            }
-            if let Some(st) = &ctx.stats {
-                if st.swarm {
-                    names.push(("swarm", "accent"));
-                }
-                if st.tower {
-                    names.push(("tower", "accent"));
-                }
-            }
-            let mut spans = Vec::new();
-            for (i, (name, tok)) in names.into_iter().enumerate() {
-                if i > 0 {
-                    spans.push(plain(" "));
-                }
-                spans.push(Span {
-                    text: name.into(),
-                    color: Some(token(tok)),
-                    bold: true,
-                    dim: false,
-                });
-            }
-            (!spans.is_empty()).then_some(spans)
-        }
-        SegmentId::Goal => goal_badge(ctx, compact),
+        SegmentId::Mode => (!p.mode.is_empty()).then(|| vec![plain(&p.mode)]),
+        SegmentId::Cost => p.cost_usd.map(|cost| vec![plain(format!("${cost:.2}"))]),
         SegmentId::Model => {
             if p.model.is_empty() {
                 return None;
             }
-            let name = ctx.models.display(&p.model);
-            let supports = ctx
-                .models
-                .has_efforts
-                .get(&p.model)
-                .copied()
-                .unwrap_or(true);
-            let thinking = match &ctx.effort {
-                Some(serde_json::Value::Bool(true)) => " thinking".to_string(),
-                Some(serde_json::Value::String(e)) if e == "on" || (!supports && e != "off") => {
-                    " thinking".to_string()
-                }
-                Some(serde_json::Value::String(e)) if e != "off" => {
-                    if compact {
-                        format!(" {e}")
-                    } else {
-                        format!(" thinking: {e}")
-                    }
-                }
-                _ => String::new(),
-            };
-            let label = format!("{name}{thinking}");
-            match ctx
-                .dance
-                .filter(|_| seg.opt_bool("dance", true) && ctx.color)
-            {
-                // The TUI reruns us about once a second, so upstream's 110ms
-                // frames can't be replayed; one palette step per run gives a
-                // slow glide instead of a jumpy one. The hold freezes at the
-                // phase upstream's 3s flow lands on (3000 / 110 ≈ 27).
-                Some(Dance::Flow) => {
-                    Some(rainbow(&label, ctx.now as usize, ctx.palette.is_light()))
-                }
-                Some(Dance::Hold) => Some(rainbow(&label, 27, ctx.palette.is_light())),
-                None => Some(vec![plain(label)]),
+            let mut label = ctx.models.display(&p.model);
+            match &ctx.effort {
+                Some(serde_json::Value::String(e)) if e != "off" => label += &format!(" {e}"),
+                Some(serde_json::Value::Bool(true)) => label += " thinking",
+                _ => {}
             }
+            Some(vec![plain(label)])
         }
-        SegmentId::Tasks => {
-            let (bash, agent) = ctx.tasks;
-            let mut out = Vec::new();
-            let mut push = |n: u32, one: &str, many: &str| {
-                if n == 0 {
-                    return;
-                }
-                if !out.is_empty() {
-                    out.push(plain(" "));
-                }
-                let noun = if n == 1 { one } else { many };
-                out.push(plain(if compact {
-                    format!("{n} {noun}")
-                } else {
-                    format!("[{n} {noun} running]")
-                }));
-            };
-            push(bash, "task", "tasks");
-            push(agent, "agent", "agents");
-            (!out.is_empty()).then_some(out)
+        SegmentId::OutputStyle => {
+            (!p.output_style.is_empty()).then(|| vec![plain(&p.output_style)])
         }
         SegmentId::Directory => {
             if p.cwd.is_empty() {
@@ -360,11 +220,13 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             } else {
                 seg.opt_int("depth", 3).max(0) as usize
             };
-            Some(vec![plain(shorten_cwd(&p.cwd, depth))])
+            Some(vec![plain(crate::payload::label(&shorten_cwd(
+                &p.cwd, depth,
+            )))])
         }
         SegmentId::Git => {
             let branch = p.git_branch.as_deref().filter(|b| !b.is_empty())?;
-            let mut text = branch.to_string();
+            let mut text = crate::payload::label(branch);
             if let Some(g) = ctx.git {
                 let mut parts = Vec::new();
                 if g.added > 0 || g.deleted > 0 {
@@ -403,7 +265,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             let mut spans = vec![plain(text)];
             if let Some(pr) = &ctx.pr {
                 let badge = format!("[PR#{}]", pr.number);
-                let badge = if seg.opt_bool("pr_link", true) {
+                let badge = if ctx.color && seg.opt_bool("pr_link", true) {
                     hyperlink(&badge, &pr.url)
                 } else {
                     badge
@@ -468,7 +330,8 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             Some(spans)
         }
         SegmentId::Quota => quota_segment(ctx, seg, compact),
-        SegmentId::Tps => tps_segment(ctx, seg, compact),
+        SegmentId::Changes => (p.lines_added > 0 || p.lines_removed > 0)
+            .then(|| vec![plain(format!("+{} -{}", p.lines_added, p.lines_removed))]),
         SegmentId::Session => {
             let created = ctx.session_created?;
             let secs = (ctx.now - created).max(0.0) as u64;
@@ -523,9 +386,9 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
         ("5h", q.limit_5h.as_ref(), seg.opt_bool("show_5h", true)),
         ("7d", q.limit_7d.as_ref(), seg.opt_bool("show_7d", true)),
         (
-            if zh { "月" } else { "mo" },
-            q.month.as_ref(),
-            seg.opt_bool("show_month", false),
+            if zh { "限额" } else { "spend" },
+            q.spend.as_ref(),
+            seg.opt_bool("show_spend", true),
         ),
     ];
     let colorful = seg.opt_bool("colorful", true);
@@ -540,7 +403,7 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
         if !spans.is_empty() {
             spans.push(plain(if compact { " " } else { " · " }));
         }
-        let ratio = e.used_ratio.clamp(0.0, 1.0);
+        let ratio = e.used_ratio.max(0.0);
         // ceil like upstream usagePercent: any use shows at least 1%
         let pct = (ratio * 100.0).ceil() as u32;
         let tok = if ratio >= 0.85 {
@@ -552,7 +415,7 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
         };
         spans.push(plain(format!("{label} ")));
         if bar {
-            let filled = (ratio * 8.0).round() as usize;
+            let filled = (ratio.min(1.0) * 8.0).round() as usize;
             spans.push(Span {
                 text: format!("{}{} ", "█".repeat(filled), "░".repeat(8 - filled)),
                 color: colorful.then(|| token(tok)),
@@ -577,57 +440,6 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
         }
     }
     (!spans.is_empty()).then_some(spans)
-}
-
-/// `33.1 tok/s · ×3 96 tok/s (avg 31.4)`: the latest call's decode speed
-/// (any agent); while several agents are streaming at once, their combined
-/// throughput and count; and the session's token-weighted average. An idle
-/// session keeps the last measurement on screen, dimmed once it is older
-/// than `stale_secs` so it doesn't read as live; `hide_when_stale` drops it
-/// instead.
-fn tps_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
-    let speed = &ctx.stats.as_ref()?.speed;
-    let last = speed.last()?;
-    let stale_after = seg.opt_int("stale_secs", 300);
-    let stale = stale_after > 0 && ctx.now - last.end / 1000.0 > stale_after as f64;
-    if stale && seg.opt_bool("hide_when_stale", false) {
-        return None;
-    }
-    let fmt = |v: f64| {
-        if v >= 100.0 {
-            format!("{v:.0}")
-        } else {
-            format!("{v:.1}")
-        }
-    };
-    let unit = if compact { "t/s" } else { "tok/s" };
-    let mut spans = vec![plain(format!("{} {unit}", fmt(last.rate())))];
-    if seg.opt_bool("show_parallel", true) {
-        let window = seg.opt_int("window_secs", 30).max(1) as f64;
-        if let Some(tp) = speed.throughput(window).filter(|t| t.agents > 1) {
-            spans.push(plain(if compact { " " } else { " · " }));
-            spans.push(colored(
-                format!("×{} {} {unit}", tp.agents, fmt(tp.tokens_per_sec)),
-                token("accent"),
-            ));
-        }
-    }
-    if seg.opt_bool("show_avg", true) && !compact {
-        if let Some(avg) = speed.average() {
-            let label = if ctx.zh() { "均" } else { "avg" };
-            spans.push(colored(
-                format!(" ({label} {})", fmt(avg)),
-                token("text_muted"),
-            ));
-        }
-    }
-    if stale {
-        for span in &mut spans {
-            span.color = Some(token("text_muted"));
-            span.dim = true;
-        }
-    }
-    Some(spans)
 }
 
 fn fmt_reset(rfc3339: &str, now: f64, zh: bool, compact: bool) -> Option<String> {
@@ -661,44 +473,6 @@ fn fmt_reset(rfc3339: &str, now: f64, zh: bool, compact: bool) -> Option<String>
     } else {
         local.format("%a %H:%M").to_string()
     })
-}
-
-/// `[goal ● active · 4m · 7 turns]`, a port of upstream formatGoalBadge.
-/// Only live goals get a badge; an active goal's clock keeps ticking from
-/// when this snapshot was first seen.
-fn goal_badge(ctx: &Ctx, compact: bool) -> Option<Vec<Span>> {
-    let g = ctx.goal.as_ref()?;
-    let status = g.get("status")?.as_str()?;
-    let dot = match status {
-        "active" => "primary",
-        "blocked" => "warning",
-        "paused" => "text_muted",
-        _ => return None,
-    };
-    let num = |v: Option<&serde_json::Value>| v.and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let turns_used = num(g.get("turnsUsed")) as u64;
-    let turns = match g
-        .get("budget")
-        .and_then(|b| b.get("turnBudget"))
-        .and_then(|t| t.as_u64())
-    {
-        Some(b) => format!("{turns_used}/{b} turns"),
-        None if turns_used == 1 => "1 turn".into(),
-        None => format!("{turns_used} turns"),
-    };
-    let mut wall_ms = num(g.get("wallClockMs"));
-    if status == "active" {
-        if let Some(seen) = ctx.goal_seen_at {
-            wall_ms += ((ctx.now - seen) * 1000.0).max(0.0);
-        }
-    }
-    let elapsed = fmt_duration((wall_ms / 1000.0).round() as u64);
-    let tail = if compact {
-        format!(" {elapsed}]")
-    } else {
-        format!(" {status} · {elapsed} · {turns}]")
-    };
-    Some(vec![plain("[goal "), colored("●", token(dot)), plain(tail)])
 }
 
 // ---------------------------------------------------------------------------
@@ -848,6 +622,9 @@ fn compose(ctx: &Ctx, compact: bool, dropped: &[SegmentId]) -> String {
 /// then drop segments from least to most useful, and only as a last resort
 /// cut with an ellipsis. `None` width returns the full line.
 pub fn render(ctx: &Ctx, width: Option<usize>) -> String {
+    if width == Some(0) {
+        return String::new();
+    }
     let full = compose(ctx, false, &[]);
     let Some(width) = width else { return full };
     if visible_width(&full) <= width {
@@ -855,7 +632,16 @@ pub fn render(ctx: &Ctx, width: Option<usize>) -> String {
     }
     use SegmentId::*;
     const DROP_ORDER: [SegmentId; 10] = [
-        Session, Tps, Git, Directory, Subagent, Tasks, Goal, Context, Quota, Mode,
+        Session,
+        Changes,
+        Git,
+        Directory,
+        Subagent,
+        OutputStyle,
+        Cost,
+        Context,
+        Quota,
+        Mode,
     ];
     let mut dropped = Vec::new();
     let mut line = compose(ctx, true, &dropped);
@@ -949,66 +735,6 @@ fn truncate(s: &str, width: usize, color: bool) -> String {
 mod tests {
     use super::*;
 
-    fn tps_ctx(age_secs: f64, hide_when_stale: bool) -> (Ctx, SegmentConfig) {
-        let mut config = crate::themes::get("kimi");
-        let seg = config
-            .segments
-            .iter_mut()
-            .find(|s| s.id == SegmentId::Tps)
-            .unwrap();
-        seg.enabled = true;
-        seg.options
-            .insert("hide_when_stale".into(), hide_when_stale.into());
-        let seg = seg.clone();
-        let now = 1_000_000.0;
-        let mut stats = SessionStats::default();
-        stats.speed.recent.push(crate::session::Call {
-            agent: "main".into(),
-            start: (now - age_secs - 10.0) * 1000.0,
-            end: (now - age_secs) * 1000.0,
-            output: 420,
-            ttft: 0.0,
-        });
-        let ctx = Ctx {
-            payload: Payload::default(),
-            config,
-            palette: crate::kimi_config::DARK,
-            models: Models::default(),
-            stats: Some(stats),
-            effort: None,
-            goal: None,
-            goal_seen_at: None,
-            session_created: None,
-            tasks: (0, 0),
-            git: None,
-            pr: None,
-            dance: None,
-            quota: None,
-            now,
-            color: true,
-        };
-        (ctx, seg)
-    }
-
-    #[test]
-    fn idle_tps_stays_visible_but_dimmed() {
-        let muted = Some(token("text_muted"));
-        // fresh: the rate is not dimmed
-        let (ctx, seg) = tps_ctx(10.0, false);
-        let spans = tps_segment(&ctx, &seg, false).unwrap();
-        assert_eq!(spans[0].text, "42.0 tok/s");
-        assert_ne!(spans[0].color, muted);
-        // idle past stale_secs (300): still shown, every span dimmed
-        let (ctx, seg) = tps_ctx(3600.0, false);
-        let spans = tps_segment(&ctx, &seg, false).unwrap();
-        assert_eq!(spans[0].text, "42.0 tok/s");
-        assert!(spans.iter().all(|s| s.color == muted && s.dim));
-        assert!(!tps_segment(&tps_ctx(10.0, false).0, &seg, false).unwrap()[0].dim);
-        // hide_when_stale restores the old behavior
-        let (ctx, seg) = tps_ctx(3600.0, true);
-        assert!(tps_segment(&ctx, &seg, false).is_none());
-    }
-
     #[test]
     fn tokens_and_rates() {
         assert_eq!(fmt_tokens(999), "999");
@@ -1069,13 +795,5 @@ mod tests {
             fmt_reset("2026-09-15T00:00:00Z", now, false, true).unwrap(),
             "3d"
         );
-    }
-
-    #[test]
-    fn rainbow_skips_spaces() {
-        let spans = rainbow("a b", 0, false);
-        assert_eq!(spans.len(), 3);
-        assert!(spans[1].color.is_none());
-        assert_eq!(spans[2].color, Some(rgb(DARK_RAINBOW[1])));
     }
 }

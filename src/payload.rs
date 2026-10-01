@@ -1,53 +1,155 @@
-//! The JSON snapshot kimi-code writes to the command's stdin
-//! (`StatusLinePayload` in apps/kimi-code/src/tui/utils/status-line-command.ts).
-
-use serde::Deserialize;
+//! Normalize Claude Code's statusLine JSON into rendering data.
+use serde_json::Value;
 use std::io::Read;
 use std::sync::mpsc;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Debug, Clone, Default)]
 pub struct Payload {
-    /// Already the display name (upstream runs it through modelDisplayName).
     pub model: String,
     pub cwd: String,
     pub git_branch: Option<String>,
-    pub permission_mode: String,
-    pub plan_mode: bool,
     pub context_usage: f64,
     pub context_tokens: u64,
     pub max_context_tokens: u64,
     pub session_id: String,
-    pub version: String,
+    pub transcript_path: String,
+    pub effort: Option<Value>,
+    pub mode: String,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: Option<u64>,
+    pub lines_added: u64,
+    pub lines_removed: u64,
+    pub output_style: String,
+    pub quota: Option<crate::quota::Quota>,
+    pub pr: Option<crate::probe::PullRequest>,
 }
 
-/// Read the snapshot, giving up after `timeout` so a writer that never closes
-/// the pipe can't hold us past the TUI's 300ms cap.
 pub fn read_stdin(timeout: Duration) -> Payload {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = std::io::stdin().lock().read_to_end(&mut buf);
+        let _ = std::io::stdin()
+            .lock()
+            .take(1024 * 1024)
+            .read_to_end(&mut buf);
         let _ = tx.send(buf);
     });
-    match rx.recv_timeout(timeout) {
-        Ok(buf) => parse(&buf),
-        Err(_) => {
-            crate::paths::debug("stdin read timed out");
-            Payload::default()
-        }
-    }
+    rx.recv_timeout(timeout)
+        .map(|buf| {
+            let payload = parse(&buf);
+            if !payload.cwd.is_empty() && !payload.session_id.is_empty() {
+                let cache = crate::paths::cache_dir().join(format!(
+                    "preview-{}.json",
+                    crate::paths::short_hash(&payload.cwd)
+                ));
+                let _ = crate::paths::write_atomic(&cache, &buf);
+            }
+            payload
+        })
+        .unwrap_or_default()
+}
+
+/// Strip terminal controls from external labels; only the renderer emits ANSI.
+pub fn label(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 pub fn parse(buf: &[u8]) -> Payload {
-    let text = String::from_utf8_lossy(buf);
-    let text = text.trim();
-    if text.is_empty() {
+    let Ok(v) = serde_json::from_slice::<Value>(buf) else {
         return Payload::default();
+    };
+    let s = |ptr: &str| {
+        v.pointer(ptr)
+            .and_then(Value::as_str)
+            .map(label)
+            .unwrap_or_default()
+    };
+    let n = |ptr: &str| v.pointer(ptr).and_then(Value::as_u64).unwrap_or(0);
+    let context_tokens = n("/context_window/current_usage/input_tokens")
+        .saturating_add(n(
+            "/context_window/current_usage/cache_creation_input_tokens",
+        ))
+        .saturating_add(n("/context_window/current_usage/cache_read_input_tokens"));
+    let max_context_tokens = n("/context_window/context_window_size");
+    let context_usage = v
+        .pointer("/context_window/used_percentage")
+        .and_then(Value::as_f64)
+        .map(|p| p / 100.0)
+        .unwrap_or_else(|| context_tokens as f64 / max_context_tokens.max(1) as f64);
+    let mut modes = Vec::new();
+    for ptr in ["/vim/mode", "/agent/name"] {
+        let value = s(ptr);
+        if !value.is_empty() {
+            modes.push(value);
+        }
     }
-    serde_json::from_str(text).unwrap_or_else(|e| {
-        crate::paths::debug(&format!("bad payload: {e}"));
-        Payload::default()
-    })
+    if v.get("fast_mode").and_then(Value::as_bool) == Some(true) {
+        modes.push("fast".into());
+    }
+    let raw_path = |ptr: &str| {
+        v.pointer(ptr)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let cwd = raw_path("/workspace/current_dir");
+    let model = s("/model/display_name");
+    Payload {
+        model: if model.is_empty() {
+            s("/model/id")
+        } else {
+            model
+        },
+        cwd: if cwd.is_empty() {
+            raw_path("/cwd")
+        } else {
+            cwd
+        },
+        session_id: s("/session_id"),
+        transcript_path: raw_path("/transcript_path"),
+        git_branch: None,
+        context_tokens,
+        max_context_tokens,
+        context_usage,
+        effort: v
+            .pointer("/effort/level")
+            .and_then(Value::as_str)
+            .map(|s| Value::String(label(s)))
+            .or_else(|| v.pointer("/thinking/enabled").cloned()),
+        mode: modes.join(" "),
+        cost_usd: v
+            .pointer("/cost/total_cost_usd")
+            .and_then(Value::as_f64)
+            .filter(|v| *v >= 0.0),
+        duration_ms: v.pointer("/cost/total_duration_ms").and_then(Value::as_u64),
+        lines_added: n("/cost/total_lines_added"),
+        lines_removed: n("/cost/total_lines_removed"),
+        output_style: s("/output_style/name"),
+        quota: v
+            .get("rate_limits")
+            .filter(|r| r.is_object())
+            .map(crate::quota::from_payload),
+        pr: v.get("pr").and_then(|pr| {
+            Some(crate::probe::PullRequest {
+                number: pr.get("number")?.as_u64()?,
+                url: pr.get("url")?.as_str().map(label)?,
+            })
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn nullable_context_and_preferred_workspace() {
+        let p = parse(br#"{"cwd":"/old","workspace":{"current_dir":"/new"},"model":{"id":"claude-test"},"context_window":{"context_window_size":1000000,"current_usage":null,"used_percentage":null}}"#);
+        assert_eq!(p.cwd, "/new");
+        assert_eq!(p.model, "claude-test");
+        assert_eq!(p.context_usage, 0.0);
+        let p = parse(br#"{"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":1000,"cache_read_input_tokens":18000,"cache_creation_input_tokens":1000,"output_tokens":9000}}}"#);
+        assert_eq!(p.context_tokens, 20000);
+        assert_eq!(p.context_usage, 0.1);
+    }
 }

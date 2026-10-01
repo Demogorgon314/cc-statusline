@@ -1,8 +1,8 @@
-//! Popup pickers: color (16 / 256 / RGB / Kimi palette tokens), icon, and
+//! Popup pickers: color (16 / 256 / RGB / Palette tokens), icon, and
 //! separator, after CCometixLine's components.
 
+use crate::appearance::{Palette, Rgb};
 use crate::config::{AnsiColor, TOKENS};
-use crate::kimi_config::{Palette, Rgb};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -240,9 +240,9 @@ impl ColorPicker {
         f.render_widget(Clear, area);
         let body = inner(area);
         let mut hits: ClickMap = Vec::new();
-        // tabs on the first line: " Kimi palette " " 16 colors " …
+        // tabs on the first line: " Palette " " 16 colors " …
         let mut x = body.x;
-        for (i, name) in ["Kimi palette", "16 colors", "256 colors", "RGB"]
+        for (i, name) in ["Palette", "16 colors", "256 colors", "RGB"]
             .iter()
             .enumerate()
         {
@@ -262,7 +262,7 @@ impl ColorPicker {
         };
         let mut lines = vec![
             Line::from(vec![
-                tab(ColorMode::Palette, "Kimi palette"),
+                tab(ColorMode::Palette, "Palette"),
                 Span::raw(" "),
                 tab(ColorMode::Basic16, "16 colors"),
                 Span::raw(" "),
@@ -292,7 +292,7 @@ impl ColorPicker {
                     lines.push(Line::from(cell(i + 1, c, format!(" ██ {t}"))));
                 }
                 lines.push(Line::styled(
-                    "Follows the Kimi Code theme (dark/light/custom)",
+                    "Follows the selected palette (dark/light/custom)",
                     Style::new().fg(Color::DarkGray),
                 ));
             }
@@ -598,7 +598,7 @@ impl IconPicker {
 // ---------------------------------------------------------------------------
 
 const SEPARATORS: [(&str, &str, &str); 7] = [
-    ("Space", "  ", "Two spaces, like Kimi Code's own footer"),
+    ("Space", "  ", "Two spaces, between adjacent segments"),
     ("Pipe", " | ", "Classic pipe separator"),
     ("Thin", " │ ", "Thin vertical line"),
     ("Dot", " • ", "Middle dot"),

@@ -1,4 +1,4 @@
-//! Locations under the Kimi Code home directory, plus the debug log.
+//! Locations under the Claude Code home directory, plus the debug log.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -11,18 +11,18 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// `$KIMI_CODE_HOME`, else `~/.kimi-code`.
-pub fn kimi_home() -> PathBuf {
-    if let Some(p) = std::env::var_os("KIMI_CODE_HOME") {
+/// `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
+pub fn claude_home() -> PathBuf {
+    if let Some(p) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
     home_dir()
-        .map(|h| h.join(".kimi-code"))
-        .unwrap_or_else(|| PathBuf::from(".kimi-code"))
+        .map(|h| h.join(".claude"))
+        .unwrap_or_else(|| PathBuf::from(".claude"))
 }
 
 pub fn cache_dir() -> PathBuf {
-    kimi_home().join("kimi-statusline-cache")
+    claude_home().join("cc-statusline-cache")
 }
 
 /// Stable short hash for cache file names (FNV-1a 64; std's hasher is not
@@ -43,34 +43,55 @@ pub fn now_secs() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Append to `<home>/kimi-statusline-debug.log` when `KIMI_STATUSLINE_DEBUG`
-/// is set or the flag file `<home>/kimi-statusline-debug` exists (the latter
+/// Append to `<home>/cc-statusline-debug.log` when `CC_STATUSLINE_DEBUG`
+/// is set or the flag file `<home>/cc-statusline-debug` exists (the latter
 /// needs no TUI restart).
 pub fn debug(msg: &str) {
-    let home = kimi_home();
-    if std::env::var_os("KIMI_STATUSLINE_DEBUG").is_none()
-        && !home.join("kimi-statusline-debug").exists()
+    let home = claude_home();
+    if std::env::var_os("CC_STATUSLINE_DEBUG").is_none()
+        && !home.join("cc-statusline-debug").exists()
     {
         return;
     }
     if let Ok(mut f) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(home.join("kimi-statusline-debug.log"))
+        .open(home.join("cc-statusline-debug.log"))
     {
         let _ = writeln!(f, "{:.3} {msg}", now_secs());
     }
 }
 
-/// Write via a temp file + rename, so a run killed at the 300ms cap can never
+/// Write via a temp file + rename, so a run killed at the render deadline can never
 /// leave a half-written cache behind.
 pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&tmp, data)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = path.with_extension(format!("{}.{nonce}.tmp", std::process::id()));
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        // settings.json can contain secrets in env; an atomic replacement
+        // must not broaden the original file's access permissions.
+        if let Ok(metadata) = std::fs::metadata(path) {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.write_all(data)?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    result.inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
 }

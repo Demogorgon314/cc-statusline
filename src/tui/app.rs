@@ -9,7 +9,7 @@ use crate::config::{AnsiColor, Config, Lang, SegmentConfig, SegmentId, StyleMode
 use crate::quota::{Entry, Quota};
 use crate::render::Ctx;
 use crate::session::{SessionStats, Usage};
-use crate::{collect, kimi_config, themes};
+use crate::{appearance, collect, themes};
 use ansi_to_tui::IntoText;
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -124,13 +124,13 @@ fn fill_demo(ctx: &mut Ctx) {
             ..Default::default()
         };
         st.sub_by_model
-            .insert("kimi-code/k3".into(), u(9_000, 4_100, 310_000));
+            .insert("claude-sonnet-4-6".into(), u(9_000, 4_100, 310_000));
         ctx.stats = Some(st);
     }
     if ctx.payload.max_context_tokens == 0 {
         ctx.payload.context_tokens = 98_000;
-        ctx.payload.max_context_tokens = 262_144;
-        ctx.payload.context_usage = 98_000.0 / 262_144.0;
+        ctx.payload.max_context_tokens = 200_000;
+        ctx.payload.context_usage = 98_000.0 / 200_000.0;
     }
     if ctx.quota.is_none() {
         let reset = |h: i64| (chrono::Utc::now() + chrono::Duration::hours(h)).to_rfc3339();
@@ -143,7 +143,7 @@ fn fill_demo(ctx: &mut Ctx) {
                 used_ratio: 0.13,
                 reset_at: Some(reset(90)),
             }),
-            month: Some(Entry {
+            spend: Some(Entry {
                 used_ratio: 0.31,
                 reset_at: Some(reset(400)),
             }),
@@ -152,14 +152,11 @@ fn fill_demo(ctx: &mut Ctx) {
     if ctx.session_created.is_none() {
         ctx.session_created = Some(ctx.now - 3_720.0);
     }
-    if ctx.goal.is_none() {
-        ctx.goal =
-            Some(serde_json::json!({"status": "active", "turnsUsed": 7, "wallClockMs": 240_000}));
-    }
-    if ctx.tasks == (0, 0) {
-        ctx.tasks = (1, 0);
-    }
-    ctx.payload.plan_mode = true;
+    ctx.payload.cost_usd.get_or_insert(0.42);
+    ctx.payload.output_style = "default".into();
+    ctx.payload.mode = "NORMAL".into();
+    ctx.payload.lines_added = 42;
+    ctx.payload.lines_removed = 7;
 }
 
 fn color_desc(c: &Option<AnsiColor>) -> String {
@@ -255,7 +252,7 @@ impl App {
     fn preview(&mut self, width: usize) -> String {
         let name =
             (!self.config.style.palette.is_empty()).then_some(self.config.style.palette.as_str());
-        self.ctx.palette = kimi_config::palette(name);
+        self.ctx.palette = appearance::palette(name);
         self.ctx.config = self.config.clone();
         crate::render::render(&self.ctx, Some(width))
     }
@@ -823,10 +820,7 @@ impl App {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    format!(
-                        "kimi-statusline Configurator v{}",
-                        env!("CARGO_PKG_VERSION")
-                    ),
+                    format!("cc-statusline Configurator v{}", env!("CARGO_PKG_VERSION")),
                     Style::new().fg(Color::Cyan),
                 ),
                 Span::styled(dirty, Style::new().fg(Color::Yellow)),
@@ -858,7 +852,7 @@ impl App {
                 format!(
                     "colors: {}",
                     if self.config.style.palette.is_empty() {
-                        "tui.toml"
+                        "default"
                     } else {
                         &self.config.style.palette
                     }
@@ -1322,18 +1316,20 @@ fn help_buttons(panel: Panel) -> Vec<Button> {
 
 fn segment_help(id: SegmentId) -> &'static str {
     match id {
-        SegmentId::Mode => "Permission mode, plan, swarm and tower badges.",
-        SegmentId::Goal => "Live /goal badge: status, elapsed time, turns.",
-        SegmentId::Model => "Model + thinking effort; dance: rainbow after /dance.",
-        SegmentId::Tasks => "Running background shell tasks and agents.",
+        SegmentId::Mode => "Vim mode, agent name and fast mode.",
+        SegmentId::Cost => "Estimated session cost in USD from Claude Code.",
+        SegmentId::Model => "Model display name and current reasoning effort.",
+        SegmentId::OutputStyle => "Current Claude Code output style.",
         SegmentId::Directory => "Working directory; depth: path segments kept.",
         SegmentId::Git => "Branch, diff stats, ahead/behind; pr: open PR via gh.",
         SegmentId::Context => "Context window fill, colored by pressure.",
         SegmentId::Usage => "Whole-session input ↑, output ↓ and cache hit rate.",
         SegmentId::Subagent => "Usage of the heaviest sub-agent model.",
         SegmentId::Session => "Time since the session was created.",
-        SegmentId::Tps => "Decode speed of the latest model call (main agent or sub-agent): output tokens over streaming time, as measured by Kimi Code; time to first token is excluded. While several agents stream at once, ×N shows their combined rate over window_secs. avg is token-weighted over the session. Stays on screen when idle, dimmed after stale_secs (hide_when_stale removes it instead).",
-        SegmentId::Quota => "Plan quota: 5h / 7d (and monthly) used % with reset time. Needs a Kimi Code OAuth login; refreshed in the background every refresh_secs.",
+        SegmentId::Changes => "Lines added and removed during this session.",
+        SegmentId::Quota => {
+            "5h / 7d quota from Claude Code; optional OAuth fallback for older clients."
+        }
     }
 }
 
@@ -1359,10 +1355,10 @@ const HELP: &str = "\
    1-9 / P          pick / cycle theme      R  reset theme
    M                plain → nerd_font → powerline
    E                separator               L  language en/zh
-   C                colors: tui.toml → dark → light
+   C                colors: default → dark → light
    S                save config.toml        W  write current theme
    Ctrl+S           save as a new theme     Esc quit
-   Ctrl+C twice     exit kimi-statusline right away
+   Ctrl+C twice     exit cc-statusline right away
 
  Press any key or click to close";
 

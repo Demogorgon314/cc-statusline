@@ -1,21 +1,9 @@
-//! Plan quota (5h / 7d / monthly limits) from the managed Kimi Code API —
-//! the same `GET <base>/usages` the TUI's `/usage` command makes, with the
-//! OAuth access token Kimi Code keeps in `credentials/<key>.json`.
-//!
-//! A network round trip doesn't fit the 300ms budget, so the status line
-//! only ever reads a cache file; when that is stale it spawns
-//! `kimi-statusline fetch-quota` detached, and a later refresh picks the
-//! answer up. Tokens are never refreshed here: Kimi Code rotates the refresh
-//! token under a cross-process lock, and racing it could log the user out.
-//! An expired token just keeps the last known numbers on screen.
-
+//! Native rate limits, with an opt-in background OAuth fallback for older clients.
 use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-const DEFAULT_BASE_URL: &str = "https://api.kimi.com/coding/v1";
-const GLOBAL_BASE_URL: &str = "https://api.kimi.ai/coding/v1";
 /// Don't spawn another fetch while one may still be running.
 const FETCH_LOCK_S: f64 = 20.0;
 
@@ -29,7 +17,7 @@ pub struct Entry {
 pub struct Quota {
     pub limit_5h: Option<Entry>,
     pub limit_7d: Option<Entry>,
-    pub month: Option<Entry>,
+    pub spend: Option<Entry>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -68,22 +56,30 @@ fn mtime_secs(path: &std::path::Path) -> Option<f64> {
 /// Cached quota; kicks off a background refresh when it is due:
 /// - the cache is older than `ttl`, or
 /// - the last attempt failed and either `RETRY_AFTER_ERROR_S` passed or
-///   Kimi Code has since rewritten the credentials (a refreshed token
+///   Claude Code has since rewritten the credentials (a refreshed token
 ///   usually fixes an "expired" failure immediately).
 pub fn get(ttl: f64) -> Option<Quota> {
     let cache = read_cache();
     let now = paths::now_secs();
     let failed = cache.error.is_some() || cache.v.is_none();
-    let creds_changed = failed && mtime_secs(&login().credential).is_some_and(|m| m > cache.t);
+    let creds_changed = failed
+        && mtime_secs(&paths::claude_home().join(".credentials.json")).is_some_and(|m| m > cache.t);
     let due =
         now - cache.t >= ttl || (failed && (creds_changed || now - cache.t >= RETRY_AFTER_ERROR_S));
     if due {
-        let lock_age = std::fs::read_to_string(lock_path())
-            .ok()
-            .and_then(|s| s.trim().parse::<f64>().ok())
-            .map_or(f64::MAX, |t| now - t);
-        if lock_age > FETCH_LOCK_S {
-            let _ = paths::write_atomic(&lock_path(), now.to_string().as_bytes());
+        let lock = lock_path();
+        if mtime_secs(&lock).is_some_and(|t| now - t > FETCH_LOCK_S) {
+            let _ = std::fs::remove_file(&lock);
+        }
+        let _ = std::fs::create_dir_all(paths::cache_dir());
+        // Exclusive creation prevents simultaneous status-line processes
+        // from launching duplicate requests for the same account.
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lock)
+            .is_ok()
+        {
             spawn_fetch();
         }
     }
@@ -102,7 +98,7 @@ fn spawn_fetch() {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // own process group: the TUI kills ours at 300ms
+        // own process group: foreground rendering may exit first
         cmd.process_group(0);
     }
     #[cfg(windows)]
@@ -135,152 +131,129 @@ pub fn fetch_and_store() -> Result<Quota, String> {
     result
 }
 
-/// Last fetch error, for `kimi-statusline quota` diagnostics.
+/// Last fetch error, for `cc-statusline quota` diagnostics.
 pub fn last_error() -> Option<String> {
     read_cache().error
 }
 
-struct Login {
-    base_url: String,
-    credential: PathBuf,
-}
-
-/// Where to ask and with which credential slot, following Kimi Code:
-/// `KIMI_CODE_BASE_URL`, else the managed provider in config.toml, else the
-/// region marker (`global` → api.kimi.ai), else mainland.
-fn login() -> Login {
-    let home = paths::kimi_home();
-    let provider = std::fs::read_to_string(home.join("config.toml"))
-        .ok()
-        .and_then(|t| t.parse::<toml::Table>().ok())
-        .and_then(|doc| {
-            doc.get("providers")?
-                .get("managed:kimi-code")?
-                .as_table()
-                .cloned()
-        });
-    let cfg_base = provider
-        .as_ref()
-        .and_then(|p| p.get("base_url")?.as_str().map(str::to_string));
-    let key = provider
-        .as_ref()
-        .and_then(|p| p.get("oauth")?.get("key")?.as_str().map(str::to_string))
-        .unwrap_or_else(|| "oauth/kimi-code".into());
-    let region_global =
-        std::fs::read_to_string(home.join("region")).is_ok_and(|r| r.trim() == "global");
-    let base_url = std::env::var("KIMI_CODE_BASE_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or(cfg_base)
-        .unwrap_or_else(|| {
-            if region_global {
-                GLOBAL_BASE_URL
-            } else {
-                DEFAULT_BASE_URL
-            }
-            .into()
-        });
-    let name = key.strip_prefix("oauth/").unwrap_or(&key).to_string();
-    Login {
-        base_url: base_url.trim_end_matches('/').to_string(),
-        credential: home.join("credentials").join(format!("{name}.json")),
-    }
-}
-
-fn access_token(path: &PathBuf) -> Result<String, String> {
-    let v: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(path).map_err(|_| "not logged in to Kimi Code (/login)".to_string())?,
-    )
-    .map_err(|_| "unreadable credentials".to_string())?;
-    let token = v
-        .get("access_token")
-        .and_then(|t| t.as_str())
-        .filter(|t| !t.is_empty())
-        .ok_or("no access token")?;
-    if let Some(exp) = v.get("expires_at").and_then(|e| e.as_f64()) {
-        if exp <= paths::now_secs() {
-            return Err("access token expired; Kimi Code refreshes it on its next request".into());
+fn access_token() -> Result<String, String> {
+    let file = paths::claude_home().join(".credentials.json");
+    let raw = std::fs::read_to_string(file).ok();
+    #[cfg(target_os = "macos")]
+    let raw = {
+        use sha2::{Digest, Sha256};
+        let suffix = std::env::var("CLAUDE_CONFIG_DIR")
+            .ok()
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| format!("-{:x}", Sha256::digest(dir.as_bytes()))[..9].to_string())
+            .unwrap_or_default();
+        let service = format!("Claude Code-credentials{suffix}");
+        let mut cmd = Command::new("security");
+        cmd.args(["find-generic-password", "-w", "-s", &service]);
+        if let Ok(user) = std::env::var("USER") {
+            cmd.args(["-a", &user]);
         }
+        crate::probe::run_with_timeout(&mut cmd, std::time::Duration::from_secs(2)).or(raw)
+    };
+    let value: serde_json::Value = raw
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .ok_or("No Claude Code OAuth login found; sign in with /login")?;
+    let oauth = value
+        .get("claudeAiOauth")
+        .ok_or("No Claude Code OAuth token")?;
+    if oauth
+        .get("expiresAt")
+        .and_then(|v| v.as_f64())
+        .is_some_and(|t| t <= paths::now_secs() * 1000.0)
+    {
+        return Err("OAuth token expired; let Claude Code refresh your login".into());
     }
-    Ok(token.to_string())
+    oauth
+        .get("accessToken")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "No Claude Code OAuth access token".into())
 }
 
 fn fetch() -> Result<Quota, String> {
-    let login = login();
-    let token = access_token(&login.credential)?;
+    let token = access_token()?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(8)))
         .http_status_as_error(false)
         .build()
         .into();
+    // Never send the login token to a user-configured API/proxy provider URL.
     let mut res = agent
-        .get(format!("{}/usages", login.base_url))
+        .get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/json")
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("User-Agent", "cc-statusline")
         .call()
-        .map_err(|e| format!("request failed: {e}"))?;
-    let status = res.status().as_u16();
-    if status != 200 {
-        return Err(match status {
-            401 => "authorization failed (try /login)".into(),
-            404 => "usage endpoint not available for this login".into(),
-            s => format!("HTTP {s}"),
-        });
+        .map_err(|_| "Quota request failed".to_string())?;
+    if res.status().as_u16() != 200 {
+        return Err(format!(
+            "Quota request returned HTTP {}",
+            res.status().as_u16()
+        ));
     }
     let body: serde_json::Value = res
         .body_mut()
         .read_json()
-        .map_err(|e| format!("bad response: {e}"))?;
+        .map_err(|_| "Invalid quota response")?;
     Ok(parse(&body))
 }
 
-/// Mirrors upstream parseManagedUsagePayload: `usages.limit_5h` etc., each
-/// `{ used_ratio, reset_time }`, numbers possibly sent as strings.
 pub fn parse(body: &serde_json::Value) -> Quota {
-    let usages = body.get("usages");
-    let entry = |key: &str| -> Option<Entry> {
-        let raw = usages?.get(key)?;
-        let ratio = raw.get("used_ratio")?;
-        let used_ratio = ratio
-            .as_f64()
-            .or_else(|| ratio.as_str()?.trim().parse().ok())?;
-        let reset_at = raw
-            .get("reset_time")
-            .and_then(|r| r.as_str())
-            .filter(|r| !r.is_empty())
-            .map(str::to_string);
+    let entry = |key| -> Option<Entry> {
+        let v = body.get(key)?;
         Some(Entry {
-            used_ratio,
-            reset_at,
+            used_ratio: v.get("utilization")?.as_f64()? / 100.0,
+            reset_at: v
+                .get("resets_at")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
         })
     };
     Quota {
-        limit_5h: entry("limit_5h"),
-        limit_7d: entry("limit_7d"),
-        month: entry("limit_month_total"),
+        limit_5h: entry("five_hour"),
+        limit_7d: entry("seven_day"),
+        spend: None,
+    }
+}
+
+/// Native payload percentages use 0..100; reset timestamps are epoch seconds.
+pub fn from_payload(body: &serde_json::Value) -> Quota {
+    let entry = |key| -> Option<Entry> {
+        let v = body.get(key)?;
+        Some(Entry {
+            used_ratio: v.get("used_percentage")?.as_f64()? / 100.0,
+            reset_at: v
+                .get("resets_at")
+                .and_then(|v| v.as_i64())
+                .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        })
+    };
+    Quota {
+        limit_5h: entry("five_hour"),
+        limit_7d: entry("seven_day"),
+        spend: entry("spend_limit"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn parses_upstream_payload() {
-        let body = serde_json::json!({
-            "usages": {
-                "limit_5h": { "used_ratio": 0.5, "reset_time": "2026-09-11T18:00:00Z" },
-                "limit_7d": { "used_ratio": "0.1", "reset_time": "" },
-            }
-        });
-        let q = parse(&body);
-        assert_eq!(q.limit_5h.as_ref().unwrap().used_ratio, 0.5);
-        assert_eq!(
-            q.limit_5h.unwrap().reset_at.as_deref(),
-            Some("2026-09-11T18:00:00Z")
+    fn native_and_oauth_units_match() {
+        let native = from_payload(
+            &serde_json::json!({"five_hour":{"used_percentage":42.5,"resets_at":1800000000}}),
         );
-        assert_eq!(q.limit_7d.as_ref().unwrap().used_ratio, 0.1);
-        assert!(q.limit_7d.unwrap().reset_at.is_none());
-        assert!(q.month.is_none());
+        let api = parse(
+            &serde_json::json!({"five_hour":{"utilization":42.5,"resets_at":"2027-01-15T08:00:00Z"}}),
+        );
+        assert_eq!(native.limit_5h, api.limit_5h);
+        assert!(native.limit_7d.is_none());
     }
 }

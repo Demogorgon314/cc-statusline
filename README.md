@@ -1,179 +1,151 @@
-<div align="center">
+# cc-statusline
 
-# kimi-statusline
+A Rust status line for Claude Code, built from [kimi-statusline](https://github.com/Demogorgon314/kimi-statusline) and informed by [CCometixLine](https://github.com/Haleclipse/CCometixLine).
 
-**See what your Kimi Code session is really costing you — tokens, cache hits and plan quota — right in the footer.**
+[中文](README.zh.md)
 
-[![Release](https://img.shields.io/github/v/release/Demogorgon314/kimi-statusline?style=flat-square)](https://github.com/Demogorgon314/kimi-statusline/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/Demogorgon314/kimi-statusline/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/Demogorgon314/kimi-statusline/actions)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-![Rust](https://img.shields.io/badge/rust-%E2%9C%93-orange?style=flat-square&logo=rust)
-
-English | [中文](README.zh.md)
-
-![kimi-statusline in Kimi Code](assets/hero.png)
-
-</div>
-
-## Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Demogorgon314/kimi-statusline/main/install.sh | sh
+```text
+$1.23  Opus 4.6 high  …/code/project  main [+42 -7]  ctx 38% (76.0k/200.0k)  │ total ↑ 1.26M · ↓ 21.4k cache 96.2%  5h 42% ↻2h00m
 ```
 
-Then run `/reload-tui` in Kimi Code. That's it.
+## Install from this checkout
 
-<details>
-<summary>Windows, Kimi plugin, or from source</summary>
-
-**Windows (PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/Demogorgon314/kimi-statusline/main/install.ps1 | iex
+```sh
+cargo install --path . --locked
+cc-statusline install
 ```
 
-**As a Kimi Code plugin** — inside Kimi Code:
+Restart Claude Code. Installation updates only `statusLine` in `~/.claude/settings.json`, keeps the previous file as `settings.json.bak`, and refuses to replace another command unless you pass `--force`. `CLAUDE_CONFIG_DIR` overrides the Claude home directory.
 
-```
-/plugins install https://github.com/Demogorgon314/kimi-statusline
-/reload
-/new
-/reload-tui
-```
+To configure it manually:
 
-**From source**
-
-```bash
-cargo install --git https://github.com/Demogorgon314/kimi-statusline
-kimi-statusline install
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "cc-statusline",
+    "padding": 0
+  }
+}
 ```
 
-Requires kimi-code ≥ 0.30.0. The installer never overwrites someone else's status line command (use `install --force`), keeps your `tui.toml` comments, and backs it up to `tui.toml.bak`.
+The automatic installer uses the quoted absolute executable path, so PATH configuration is unnecessary. On Windows, Claude Code executes the command through Git Bash.
 
-</details>
+`install.sh`, `install.ps1`, and `update` target this project's GitHub release assets; they require a published release. Source installation works before the first release.
 
-## Why
+## Features
 
-Kimi Code's footer tells you the model and the directory. It doesn't tell you:
+- Native Claude JSON input: model, reasoning effort, context, cost, duration, output style, code changes, Vim/agent/fast-mode badges, PR links, and rate limits.
+- Incremental transcript accounting: cumulative input/output tokens, cache hit rate, and the busiest subagent model. Split assistant messages are deduplicated by `message.id`.
+- Git branch, detached HEAD, working-tree changes, conflicts, ahead/behind, and optional open PR lookup through `gh`.
+- Ten themes, plain/Nerd Font/powerline styles, custom colors and icons, English/Chinese labels, width fitting, and a keyboard/mouse configurator.
+- Safe install/uninstall, configuration backups, and checksum-verified binary updates.
 
-- 📊 **How many tokens the whole session burned** — main agent *and* every sub-agent — and your **cache hit rate**, colored red → green
-- ⏳ **How much of your 5-hour and 7-day quota is left**, and when it resets (`5h 42% ↻1h20m · 7d 63% ↻3d`)
-- 🧩 **Which sub-agent model is the expensive one**
-- 🌿 **Your git state at a glance** — diff stats, ahead/behind, and a clickable `[PR#42]`
+Claude-specific data is optional. Missing fields disappear instead of breaking the line. The program does not modify Claude's executable.
 
-kimi-statusline adds all of that while keeping everything the built-in footer shows: mode, goal, model + thinking effort, background tasks — even the `/dance` rainbow.
+## Commands
 
-## Make it yours
+```sh
+cc-statusline                     # interactive menu when stdin is a terminal
+cc-statusline config              # reorder/toggle segments, edit colors, live preview
+cc-statusline init                # write the default config; --force to replace
+cc-statusline themes
+cc-statusline -t nord preview
+cc-statusline preview --cwd /path/to/project --width 100
+cc-statusline quota               # explicitly query the Claude OAuth usage endpoint
+cc-statusline update --check
+cc-statusline update
+cc-statusline uninstall
+```
 
-![Built-in themes](assets/themes.png)
+With piped stdin, the default command renders one line from Claude's JSON. Press Ctrl+C twice within 1.5 seconds to exit the configurator and discard unsaved edits.
 
-10 built-in themes, from a look that blends into Kimi Code to full powerline. Run `kimi-statusline` to open the configurator:
+Try the bundled payload: `cargo run -- --theme claude --width 160 < examples/claude.json`.
 
-![TUI configurator](assets/configurator.png)
+Preview reuses the last payload observed for the requested directory. `--session ID` only accepts that cached session; it never substitutes a different session. Before any payload has been observed, preview shows the directory and a generic Claude label. The configurator adds demonstration values for missing data.
 
-Toggle and reorder segments, pick colors and icons, switch themes — with a live preview of your own session. Works with the keyboard or the mouse: click to select, click again to toggle or edit, drag segments to reorder them, scroll to move. Inspired by [CCometixLine](https://github.com/Haleclipse/CCometixLine).
+## Segments
 
-Press **Ctrl+C twice within 1.5 seconds** to exit from any TUI screen. The first press shows a confirmation hint; exiting discards unsaved changes.
-
-## Fast by design
-
-Kimi Code runs the status line every second and kills it after 300 ms. kimi-statusline is a single Rust binary that renders in **~10–20 ms**:
-
-- Session logs are read **incrementally** — a 100 MB session costs the same as a fresh one
-- Network calls (quota, `gh pr view`) run **in the background**; the status line only reads caches
-- Narrow terminal? It **compacts and drops** low-priority segments instead of getting cut off
-
-![Adaptive width](assets/adaptive.png)
-
-## Reference
-
-<details>
-<summary>Segments</summary>
-
-| id | Shows |
+| ID | Data |
 | --- | --- |
-| `mode` | Permission mode / plan / swarm / tower badges |
-| `goal` | `[goal ● active · 4m · 7 turns]` |
-| `model` | Model and thinking effort (follows `/effort`); rainbow after `/dance` |
-| `tasks` | `[2 tasks running]` / `[1 agent running]` |
-| `directory` | Working directory |
-| `git` | Branch, diff stats, ahead/behind, open PR (needs `gh`) |
-| `context` | Context window fill (off by default — the footer's second line shows it) |
-| `usage` | Whole-session input ↑ / output ↓ / cache hit rate |
-| `subagent` | Same, for the heaviest sub-agent model |
-| `session` | Session age (off by default) |
-| `quota` | 5h / 7d (optionally monthly) usage and reset time |
-| `tps` | Decode speed: `42.1 tok/s · ×3 118 tok/s (avg 40.3)` — the latest call (tokens over streaming time, from Kimi Code's own timing), plus combined throughput while sub-agents stream in parallel (off by default) |
+| `mode` | Vim mode, agent name, fast mode |
+| `cost` | Estimated session cost in USD from Claude |
+| `model` | Display name and live reasoning effort |
+| `output_style` | Output style (disabled by default) |
+| `directory` | Working directory, configurable path depth |
+| `git` | Branch, diff, conflicts, upstream tracking, PR |
+| `context` | Context percentage and input tokens / capacity |
+| `usage` | Cumulative session input/output and cache hit rate, including subagents |
+| `subagent` | Usage of the subagent model with the most input |
+| `session` | Claude's accumulated duration, falling back to transcript age (disabled by default) |
+| `quota` | Five-hour, seven-day and gateway spend limits, with reset times |
+| `changes` | Session lines added/removed (disabled by default) |
 
-When space runs out, segments drop in this order: session → tps → git → directory → subagent → tasks → goal → context → quota → mode.
+Context tokens count uncached input plus cache reads and writes, excluding output. Native `used_percentage` takes precedence. Session totals come from the transcript, because the meaning of `context_window.total_*_tokens` differs between Claude versions. Cost is Claude's estimate, not a separately calculated invoice. No decode-speed metric is inferred from API latency.
 
-TPS and usage belong to the current session: a fresh session starts empty, while resuming restores its statistics. The 5h / 7d quota belongs to your account and carries across sessions. Preview and the configurator use the latest session in the working directory.
+The live renderer reads only `transcript_path` and its `<session>/subagents/*.jsonl` directory. Empty, missing, or mismatched sessions never inherit another session's statistics. First-time reads are bounded and catch up over successive refreshes; incomplete trailing records are retried later. Transcript truncation/replacement resets the affected cursor.
 
-</details>
+## Configuration
 
-<details>
-<summary>Configuration file</summary>
-
-`~/.kimi-code/kimi-statusline/config.toml` (custom themes in `themes/<name>.toml`), same shape as CCometixLine:
+`~/.claude/cc-statusline/config.toml`:
 
 ```toml
-theme = "kimi"
+theme = "claude"
 
 [style]
 mode = "plain"          # plain | nerd_font | powerline
-separator = "  "        # "" for powerline arrows
-lang = "en"             # or "zh"
-palette = ""            # "" follows tui.toml; or dark / light / a Kimi theme name
+separator = "  "
+lang = "en"             # en | zh
+palette = "dark"        # dark | light | custom palette name
+width = 0              # 0: auto-detect; --width overrides it
+
+[[segments]]
+id = "model"
+enabled = true
+colors = { text = "primary" }
+
+[[segments]]
+id = "context"
+enabled = true
+options = { show_tokens = true, colorful = true }
 
 [[segments]]
 id = "quota"
 enabled = true
-colors = { text = "text_dim" }   # c16 / c256 / RGB / "#rrggbb" / Kimi palette name
-options = { show_5h = true, show_7d = true, show_month = false, bar = false, refresh_secs = 120 }
+options = { show_5h = true, show_7d = true, show_spend = true, show_reset = true, bar = false, oauth_fallback = false, refresh_secs = 120 }
 ```
 
-Kimi palette names (`primary`, `accent`, `text_dim`, `success`, `warning`, `error`, …) follow your TUI theme, dark or light.
+Segments appear in configuration order. Omitted segments are appended disabled. Generate a complete starting point with `cc-statusline init`.
 
-</details>
+Themes: `claude`, `cometix`, `default`, `minimal`, `gruvbox`, `nord`, `powerline-dark`, `powerline-light`, `powerline-rose-pine`, `powerline-tokyo-night`. Save custom themes in `cc-statusline/themes/<name>.toml`.
 
-<details>
-<summary>How quota works</summary>
+Colors accept palette tokens (`text`, `primary`, `accent`, `text_dim`, `text_muted`, `success`, `warning`, `error`), `"#rrggbb"`, `{ c16 = 14 }`, `{ c256 = 208 }`, or `{ r = 1, g = 2, b = 3 }`. Custom palettes live in `cc-statusline/palettes/<name>.json`, with `base` (`dark`/`light`) and a `colors` object using camelCase tokens such as `textDim`.
 
-It calls the same endpoint as Kimi Code's `/usage`, with the login Kimi Code already stores in `~/.kimi-code/credentials/`. Requests run in the background at most every `refresh_secs`.
+Optional model aliases in `cc-statusline/models.toml` map exact incoming display names or IDs to labels:
 
-kimi-statusline never refreshes your login itself — racing Kimi Code's token rotation could log you out. If Kimi Code sits idle long enough for its token to expire, the quota holds its last value and updates after your next message. `kimi-statusline quota` fetches it on demand.
-
-</details>
-
-<details>
-<summary>Commands, debugging, uninstall</summary>
-
-```bash
-kimi-statusline                 # menu: configure, install, test quota, check for updates…
-kimi-statusline config          # configurator
-kimi-statusline themes          # list themes
-kimi-statusline -t nord preview # render a theme in your terminal
-kimi-statusline quota           # fetch quota now
-kimi-statusline update          # update to the latest release (--check to only look)
-kimi-statusline uninstall       # remove from tui.toml, then /reload-tui
+```toml
+"claude-sonnet-custom" = "Team Sonnet"
 ```
 
-- Debug log: `touch ~/.kimi-code/kimi-statusline-debug`, then read `~/.kimi-code/kimi-statusline-debug.log`
-- Plugin users: `/plugins remove kimi-statusline` — the status line cleans up `tui.toml` by itself
+## Quota and offline operation
 
-</details>
+Native `rate_limits` is preferred and needs no extra request or credential read. Older clients can opt into `oauth_fallback = true`; `cc-statusline quota` also fetches explicitly. The fallback reads Claude's existing OAuth credentials (macOS Keychain, otherwise `.credentials.json`), contacts only `https://api.anthropic.com/api/oauth/usage`, and never rotates or writes login tokens. Failed refreshes retain cached data. API-key/third-party accounts can leave fallback disabled.
 
-## Contributing
+GitHub PR lookup uses `gh` in the background when Claude has not supplied `pr`; set the git segment's `pr = false` to disable it. Quota fallback also runs in the background. Set `NO_COLOR=1` or `CC_STATUSLINE_NO_COLOR=1` for plain output.
 
-```bash
-cargo test
-python3 scripts/screenshots.py   # regenerate assets/ (Chrome, ImageMagick, a Nerd Font, pyte)
+Caches and last-observed preview payloads live in `~/.claude/cc-statusline-cache/`. Enable diagnostics with `CC_STATUSLINE_DEBUG=1`; logs go to `~/.claude/cc-statusline-debug.log`.
+
+## Development
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
 ```
 
-To release, bump the version in `Cargo.toml` and `kimi.plugin.json` and push a `vX.Y.Z` tag.
+CI runs formatting, Clippy, and tests on Linux, macOS, and Windows. Tag releases as `vX.Y.Z` matching Cargo.toml; the release workflow produces six platform archives and SHA256SUMS.
 
-Credits: [CCometixLine](https://github.com/Haleclipse/CCometixLine) for the configurator and theme design, [kimi-usage](https://github.com/YD-233/kimi-usage) for session parsing.
+Protocol reference: [Claude Code status line documentation](https://code.claude.com/docs/en/statusline). Transcript deduplication and subagent layout were also checked against local Claude Code sources.
 
-## License
-
-MIT
+MIT. The original kimi-statusline copyright notice is retained in [LICENSE](LICENSE).

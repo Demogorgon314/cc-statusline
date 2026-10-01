@@ -21,7 +21,7 @@ use unicode_width::UnicodeWidthStr;
 
 pub use app::run_configurator;
 
-/// Ctrl+C twice within this window exits, like Kimi Code itself
+/// Ctrl+C twice within this window exits, throughout the configurator
 /// (EXIT_CONFIRM_WINDOW_MS upstream).
 pub const EXIT_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
 pub const CTRL_C_HINT: &str = "Press Ctrl+C again to exit";

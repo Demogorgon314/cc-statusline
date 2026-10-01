@@ -5,7 +5,7 @@
 //! caches the answer for a day. `install` downloads this platform's archive,
 //! verifies it against the release's SHA256SUMS, and swaps the running
 //! binary in place. Package-manager installs are left to the package
-//! manager: a cargo-installed or plugin-managed copy is updated the way it
+//! manager: a cargo-installed copy is updated the way it
 //! was installed.
 
 use crate::paths;
@@ -50,7 +50,7 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
         .max_redirects(0)
-        .user_agent(concat!("kimi-statusline/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("cc-statusline/", env!("CARGO_PKG_VERSION")))
         .build()
         .into()
 }
@@ -114,8 +114,6 @@ pub enum InstallKind {
     Standalone(PathBuf),
     /// `cargo install`: rebuild with cargo
     Cargo,
-    /// the Kimi Code plugin's copy: reinstall the plugin
-    Plugin,
 }
 
 pub fn install_kind() -> InstallKind {
@@ -134,10 +132,7 @@ fn cargo_bin_dir() -> Option<PathBuf> {
 }
 
 fn classify(exe: &Path, cargo_bin: &Option<PathBuf>) -> InstallKind {
-    let s = exe.to_string_lossy().replace('\\', "/");
-    if s.contains("/plugins/managed/") {
-        InstallKind::Plugin
-    } else if cargo_bin
+    if cargo_bin
         .as_deref()
         .is_some_and(|b| exe.parent() == Some(b))
     {
@@ -152,9 +147,6 @@ pub fn manual_instructions(kind: &InstallKind) -> Option<String> {
     match kind {
         InstallKind::Cargo => Some(format!(
             "installed with cargo: run  cargo install --git {REPO} --force"
-        )),
-        InstallKind::Plugin => Some(format!(
-            "plugin install: run  /plugins install {REPO}  in Kimi Code, then /reload and /new"
         )),
         InstallKind::Standalone(_) => None,
     }
@@ -174,7 +166,7 @@ fn asset_name() -> Result<String, String> {
         a => return Err(format!("no prebuilt binary for {a}")),
     };
     let ext = if os == "windows" { "zip" } else { "tar.gz" };
-    Ok(format!("kimi-statusline-{os}-{arch}.{ext}"))
+    Ok(format!("cc-statusline-{os}-{arch}.{ext}"))
 }
 
 fn download(url: &str) -> Result<Vec<u8>, String> {
@@ -182,7 +174,7 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(120)))
         .http_status_as_error(false)
-        .user_agent(concat!("kimi-statusline/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("cc-statusline/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
     let mut res = agent
@@ -219,7 +211,7 @@ fn expected_sha256(sums: &str, asset: &str) -> Option<String> {
     })
 }
 
-/// Pull the `kimi-statusline` binary out of a release archive.
+/// Pull the `cc-statusline` binary out of a release archive.
 fn extract_binary(archive: &[u8], asset: &str) -> Result<Vec<u8>, String> {
     if asset.ends_with(".tar.gz") {
         let gz = flate2::read::GzDecoder::new(archive);
@@ -227,20 +219,20 @@ fn extract_binary(archive: &[u8], asset: &str) -> Result<Vec<u8>, String> {
         for entry in tar.entries().map_err(|e| e.to_string())? {
             let mut entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path().map_err(|e| e.to_string())?.into_owned();
-            if path.file_name().is_some_and(|n| n == "kimi-statusline") {
+            if path.file_name().is_some_and(|n| n == "cc-statusline") {
                 let mut out = Vec::new();
                 entry.read_to_end(&mut out).map_err(|e| e.to_string())?;
                 return Ok(out);
             }
         }
-        Err("the archive has no kimi-statusline binary".into())
+        Err("the archive has no cc-statusline binary".into())
     } else {
         extract_from_zip(archive)
     }
 }
 
 /// Minimal reader for the release zip: one deflated or stored entry named
-/// kimi-statusline.exe (what 7z writes in the release workflow).
+/// cc-statusline.exe (what 7z writes in the release workflow).
 fn extract_from_zip(data: &[u8]) -> Result<Vec<u8>, String> {
     let u16le = |i: usize| -> Option<u16> {
         Some(u16::from_le_bytes(data.get(i..i + 2)?.try_into().ok()?))
@@ -271,7 +263,7 @@ fn extract_from_zip(data: &[u8]) -> Result<Vec<u8>, String> {
         if !name
             .rsplit(['/', '\\'])
             .next()
-            .is_some_and(|n| n == "kimi-statusline.exe")
+            .is_some_and(|n| n == "cc-statusline.exe")
         {
             continue;
         }
@@ -294,7 +286,7 @@ fn extract_from_zip(data: &[u8]) -> Result<Vec<u8>, String> {
             m => Err(format!("unsupported zip compression {m}")),
         };
     }
-    Err("the archive has no kimi-statusline.exe".into())
+    Err("the archive has no cc-statusline.exe".into())
 }
 
 /// Download `tag` for this platform, verify it, and replace the binary at
@@ -324,7 +316,7 @@ pub fn install(tag: &str, exe: &Path) -> Result<String, String> {
 /// be renamed, so the old one is moved aside first.
 fn replace_binary(exe: &Path, binary: &[u8]) -> Result<(), String> {
     let dir = exe.parent().ok_or("cannot locate the binary's directory")?;
-    let staged = dir.join(format!(".kimi-statusline-update-{}", std::process::id()));
+    let staged = dir.join(format!(".cc-statusline-update-{}", std::process::id()));
     std::fs::write(&staged, binary).map_err(|e| {
         format!(
             "cannot write to {} ({e}); try reinstalling with install.sh",
@@ -369,33 +361,26 @@ mod tests {
     #[test]
     fn sums_lookup() {
         let sums = "aa\n\
-            034fbf72d5c497aee6dfb6437ac9b2d9f4e86759910b0a52b34b330c873696ad  kimi-statusline-darwin-arm64.tar.gz\n\
-            44C34DA0B81C68CCE1B8024CF512F260BAA79A8133C05E95D85766DF2BEC09A3 *kimi-statusline-darwin-x64.tar.gz\n";
+            034fbf72d5c497aee6dfb6437ac9b2d9f4e86759910b0a52b34b330c873696ad  cc-statusline-darwin-arm64.tar.gz\n\
+            44C34DA0B81C68CCE1B8024CF512F260BAA79A8133C05E95D85766DF2BEC09A3 *cc-statusline-darwin-x64.tar.gz\n";
         assert_eq!(
-            expected_sha256(sums, "kimi-statusline-darwin-arm64.tar.gz").unwrap(),
+            expected_sha256(sums, "cc-statusline-darwin-arm64.tar.gz").unwrap(),
             "034fbf72d5c497aee6dfb6437ac9b2d9f4e86759910b0a52b34b330c873696ad"
         );
-        assert!(expected_sha256(sums, "kimi-statusline-darwin-x64.tar.gz")
+        assert!(expected_sha256(sums, "cc-statusline-darwin-x64.tar.gz")
             .unwrap()
             .starts_with("44c34da0"));
-        assert!(expected_sha256(sums, "kimi-statusline-linux-x64.tar.gz").is_none());
+        assert!(expected_sha256(sums, "cc-statusline-linux-x64.tar.gz").is_none());
     }
 
     #[test]
     fn install_kind_from_path() {
         let cargo = Some(PathBuf::from("/home/u/.cargo/bin"));
         assert_eq!(
-            classify(Path::new("/home/u/.cargo/bin/kimi-statusline"), &cargo),
+            classify(Path::new("/home/u/.cargo/bin/cc-statusline"), &cargo),
             InstallKind::Cargo
         );
-        assert_eq!(
-            classify(
-                Path::new("/home/u/.kimi-code/plugins/managed/kimi-statusline/bin/kimi-statusline"),
-                &cargo
-            ),
-            InstallKind::Plugin
-        );
-        let local = Path::new("/home/u/.local/bin/kimi-statusline");
+        let local = Path::new("/home/u/.local/bin/cc-statusline");
         assert_eq!(
             classify(local, &cargo),
             InstallKind::Standalone(local.to_path_buf())
@@ -413,16 +398,16 @@ mod tests {
             h.set_size(5);
             h.set_mode(0o755);
             h.set_cksum();
-            b.append_data(&mut h, "kimi-statusline", &b"NEWBN"[..])
+            b.append_data(&mut h, "cc-statusline", &b"NEWBN"[..])
                 .unwrap();
             b.into_inner().unwrap().finish().unwrap();
         }
-        let bin = extract_binary(&tar_bytes, "kimi-statusline-linux-x64.tar.gz").unwrap();
+        let bin = extract_binary(&tar_bytes, "cc-statusline-linux-x64.tar.gz").unwrap();
         assert_eq!(bin, b"NEWBN");
 
         let dir = std::env::temp_dir().join(format!("ksl-update-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("kimi-statusline");
+        let exe = dir.join("cc-statusline");
         std::fs::write(&exe, b"OLD").unwrap();
         replace_binary(&exe, &bin).unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), b"NEWBN");
@@ -445,8 +430,8 @@ mod tests {
     fn checksum_mismatch_leaves_binary_untouched() {
         // simulate the verify step install() runs before touching anything
         let archive = b"tampered archive bytes";
-        let sums = format!("{}  kimi-statusline-linux-x64.tar.gz\n", "0".repeat(64));
-        let expected = expected_sha256(&sums, "kimi-statusline-linux-x64.tar.gz").unwrap();
+        let sums = format!("{}  cc-statusline-linux-x64.tar.gz\n", "0".repeat(64));
+        let expected = expected_sha256(&sums, "cc-statusline-linux-x64.tar.gz").unwrap();
         assert_ne!(sha256_hex(archive), expected);
         // and the digest itself is right for a known input
         assert_eq!(

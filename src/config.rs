@@ -1,11 +1,11 @@
 //! Configuration, modeled on CCometixLine: a style section plus an ordered
 //! list of segments, each with its own icon, colors, text style and options.
 //!
-//! Files live under `<KIMI_CODE_HOME>/kimi-statusline/`:
+//! Files live under `<CLAUDE_CONFIG_DIR>/cc-statusline/`:
 //! `config.toml` (the active config) and `themes/<name>.toml` (saved themes,
-//! same format). A missing or broken config falls back to the `kimi` theme.
+//! same format). A missing or broken config falls back to the `claude` theme.
 
-use crate::kimi_config::{Palette, Rgb};
+use crate::appearance::{Palette, Rgb};
 use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -30,8 +30,7 @@ pub struct StyleConfig {
     /// Color of the separator (powerline arrows take the segment colors).
     pub separator_color: Option<AnsiColor>,
     pub lang: Lang,
-    /// Palette for token colors: "" follows tui.toml's `theme`, or
-    /// "dark" / "light" / a Kimi Code custom theme name.
+    /// Palette for token colors: empty or dark, light, or a custom palette name.
     pub palette: String,
     /// Fixed render width; 0 detects the terminal.
     pub width: usize,
@@ -80,14 +79,14 @@ pub enum Lang {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SegmentId {
-    /// permission / plan / swarm / tower badges
+    /// Vim, agent and fast-mode badges
     Mode,
-    /// live goal badge from state.json
-    Goal,
-    /// model display name + thinking effort (+ /dance rainbow)
+    /// Estimated session cost in USD
+    Cost,
+    /// Model display name and reasoning effort
     Model,
-    /// background task / agent counts
-    Tasks,
+    /// Active output style
+    OutputStyle,
     Directory,
     /// branch, diff stats, ahead/behind, PR badge
     Git,
@@ -101,16 +100,16 @@ pub enum SegmentId {
     Session,
     /// plan quota: 5h / 7d limits and reset times
     Quota,
-    /// output tokens per second
-    Tps,
+    /// Session lines added and removed
+    Changes,
 }
 
 impl SegmentId {
     pub const ALL: [SegmentId; 12] = [
         SegmentId::Mode,
-        SegmentId::Goal,
+        SegmentId::Cost,
         SegmentId::Model,
-        SegmentId::Tasks,
+        SegmentId::OutputStyle,
         SegmentId::Directory,
         SegmentId::Git,
         SegmentId::Context,
@@ -118,15 +117,15 @@ impl SegmentId {
         SegmentId::Subagent,
         SegmentId::Session,
         SegmentId::Quota,
-        SegmentId::Tps,
+        SegmentId::Changes,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             SegmentId::Mode => "Mode",
-            SegmentId::Goal => "Goal",
+            SegmentId::Cost => "Cost",
             SegmentId::Model => "Model",
-            SegmentId::Tasks => "Tasks",
+            SegmentId::OutputStyle => "Output Style",
             SegmentId::Directory => "Directory",
             SegmentId::Git => "Git",
             SegmentId::Context => "Context",
@@ -134,7 +133,7 @@ impl SegmentId {
             SegmentId::Subagent => "Subagent",
             SegmentId::Session => "Session",
             SegmentId::Quota => "Quota",
-            SegmentId::Tps => "TPS",
+            SegmentId::Changes => "Changes",
         }
     }
 }
@@ -197,7 +196,7 @@ pub struct TextStyleConfig {
 
 /// A color in any of CCometixLine's spellings (`{ c16 = 14 }`,
 /// `{ c256 = 208 }`, `{ r = 1, g = 2, b = 3 }`), a `"#rrggbb"` string, or the
-/// name of a Kimi Code palette token (`"primary"`, `"text_dim"`, …) that
+/// name of a Claude Code palette token (`"primary"`, `"text_dim"`, …) that
 /// follows the TUI theme.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -299,7 +298,7 @@ fn xterm256(c: u8) -> Rgb {
 // ---------------------------------------------------------------------------
 
 pub fn config_dir() -> PathBuf {
-    paths::kimi_home().join("kimi-statusline")
+    paths::claude_home().join("cc-statusline")
 }
 
 pub fn config_path() -> PathBuf {
@@ -316,7 +315,7 @@ impl Config {
             if !e.is_empty() {
                 paths::debug(&format!("config: {e}"));
             }
-            crate::themes::get("kimi")
+            crate::themes::get("claude")
         })
     }
 
@@ -345,8 +344,8 @@ impl Config {
             return;
         }
         let preset = crate::themes::builtin(&self.theme)
-            .or_else(|| crate::themes::builtin("kimi"))
-            .expect("kimi theme");
+            .or_else(|| crate::themes::builtin("claude"))
+            .expect("claude theme");
         for id in missing {
             if let Some(mut seg) = preset.segment(id).cloned() {
                 seg.enabled = false;

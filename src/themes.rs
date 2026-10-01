@@ -1,6 +1,4 @@
-//! Built-in theme presets (CCometixLine's set plus a `kimi` theme that
-//! mirrors Kimi Code's own footer), and saved themes under
-//! `<KIMI_CODE_HOME>/kimi-statusline/themes/<name>.toml`.
+//! Built-in themes adapted from kimi-statusline and CCometixLine.
 
 use crate::config::{
     themes_dir, AnsiColor, ColorConfig, Config, IconConfig, Lang, SegmentConfig, SegmentId,
@@ -9,10 +7,7 @@ use crate::config::{
 use std::collections::BTreeMap;
 
 pub const BUILTIN: [(&str, &str); 10] = [
-    (
-        "kimi",
-        "Matches Kimi Code's built-in footer (follows the TUI theme)",
-    ),
+    ("claude", "Claude: clean text with adaptive colors"),
     ("cometix", "Cometix: bold 16-color with Nerd Font icons"),
     ("default", "Default: 16-color with emoji icons"),
     ("minimal", "Minimal: symbols instead of emoji"),
@@ -30,12 +25,12 @@ fn icons(id: SegmentId, minimal: bool) -> (&'static str, &'static str) {
     match (id, minimal) {
         (Mode, false) => ("🛡️", "\u{f0483}"),
         (Mode, true) => ("◆", "\u{f0483}"),
-        (Goal, false) => ("🎯", "\u{f0136}"),
-        (Goal, true) => ("◎", "\u{f0136}"),
+        (Cost, false) => ("💰", "\u{f155}"),
+        (Cost, true) => ("$", "\u{f155}"),
         (Model, false) => ("🤖", "\u{e26d}"),
         (Model, true) => ("✽", "\u{f2d0}"),
-        (Tasks, false) => ("⚙️", "\u{f0493}"),
-        (Tasks, true) => ("⚙", "\u{f0493}"),
+        (OutputStyle, false) => ("✎", "\u{f040}"),
+        (OutputStyle, true) => ("✎", "\u{f040}"),
         (Directory, false) => ("📁", "\u{f024b}"),
         (Directory, true) => ("◐", "\u{f024b}"),
         (Git, false) => ("🌿", "\u{f02a2}"),
@@ -50,8 +45,8 @@ fn icons(id: SegmentId, minimal: bool) -> (&'static str, &'static str) {
         (Session, true) => ("◷", "\u{f19bb}"),
         (Quota, false) => ("⏳", "\u{f0a9e}"),
         (Quota, true) => ("◔", "\u{f0a9e}"),
-        (Tps, false) => ("🚀", "\u{f04c5}"),
-        (Tps, true) => ("≫", "\u{f04c5}"),
+        (Changes, false) => ("±", "\u{f440}"),
+        (Changes, true) => ("±", "\u{f440}"),
     }
 }
 
@@ -61,7 +56,6 @@ fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
         o.insert(k.to_string(), v);
     };
     match id {
-        SegmentId::Model => put("dance", true.into()),
         SegmentId::Directory => put("depth", 3.into()),
         SegmentId::Git => {
             put("status", true.into());
@@ -80,18 +74,12 @@ fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
         SegmentId::Quota => {
             put("show_5h", true.into());
             put("show_7d", true.into());
-            put("show_month", false.into());
+            put("show_spend", true.into());
+            put("oauth_fallback", false.into());
             put("show_reset", true.into());
             put("bar", false.into());
             put("colorful", true.into());
             put("refresh_secs", 120.into());
-        }
-        SegmentId::Tps => {
-            put("show_avg", true.into());
-            put("show_parallel", true.into());
-            put("window_secs", 30.into());
-            put("stale_secs", 300.into());
-            put("hide_when_stale", false.into());
         }
         _ => {}
     }
@@ -120,13 +108,11 @@ fn tok(name: &str) -> Option<AnsiColor> {
 }
 
 /// Default enablement, shared by every preset.
-fn enabled(id: SegmentId, kimi: bool) -> bool {
-    match id {
-        // the built-in footer's second line already shows context fill
-        SegmentId::Context => !kimi,
-        SegmentId::Session => false,
-        _ => true,
-    }
+fn enabled(id: SegmentId, _claude: bool) -> bool {
+    !matches!(
+        id,
+        SegmentId::Session | SegmentId::OutputStyle | SegmentId::Changes
+    )
 }
 
 fn build(
@@ -224,11 +210,10 @@ fn pl_theme(name: &str, colors: [(Triple, Triple); 12]) -> Config {
     build(name, StyleMode::Powerline, "\u{e0b0}", false, false, specs)
 }
 
-fn kimi() -> Config {
-    // no icons, palette-token colors: looks like the built-in footer, and
-    // follows the TUI's dark/light/custom theme
+fn claude() -> Config {
+    // Text-first default, with palette colors shared by the configurator.
     let mut cfg = build(
-        "kimi",
+        "claude",
         StyleMode::Plain,
         "  ",
         false,
@@ -240,7 +225,7 @@ fn kimi() -> Config {
                 enabled: enabled(id, true),
                 icon: tok("text_muted"),
                 text: match id {
-                    SegmentId::Tasks => tok("primary"),
+                    SegmentId::OutputStyle => tok("primary"),
                     SegmentId::Directory | SegmentId::Git => tok("text_dim"),
                     SegmentId::Session => tok("text_muted"),
                     _ => None,
@@ -260,9 +245,9 @@ fn kimi() -> Config {
 }
 
 pub fn builtin(name: &str) -> Option<Config> {
-    // order: mode goal model tasks directory git context usage subagent session
+    // order: mode cost model output_style directory git context usage subagent session quota changes
     Some(match name {
-        "kimi" => kimi(),
+        "claude" => claude(),
         "cometix" | "default" => {
             let pair = |c| (c16(c), c16(c));
             let mut cfg = fg_theme(
@@ -444,11 +429,11 @@ pub fn builtin(name: &str) -> Option<Config> {
 }
 
 /// A saved theme file first (so users can override presets), then built-ins,
-/// then `kimi`.
+/// then `claude`.
 pub fn get(name: &str) -> Config {
     load_file(name)
         .or_else(|| builtin(name))
-        .unwrap_or_else(|| builtin("kimi").expect("kimi theme"))
+        .unwrap_or_else(|| builtin("claude").expect("claude theme"))
 }
 
 fn load_file(name: &str) -> Option<Config> {
@@ -500,7 +485,7 @@ mod tests {
     #[test]
     fn old_configs_gain_new_segments_disabled() {
         let mut cfg = builtin("nord").unwrap();
-        cfg.segments.retain(|s| s.id != SegmentId::Tps);
+        cfg.segments.retain(|s| s.id != SegmentId::Changes);
         let enabled_before: Vec<_> = cfg
             .segments
             .iter()
@@ -508,11 +493,11 @@ mod tests {
             .map(|s| s.id)
             .collect();
         cfg.add_missing_segments();
-        let tps = cfg.segment(SegmentId::Tps).unwrap();
-        assert!(!tps.enabled);
+        let changes = cfg.segment(SegmentId::Changes).unwrap();
+        assert!(!changes.enabled);
         // styled like the nord preset (powerline background)
-        assert!(tps.colors.background.is_some());
-        assert_eq!(cfg.segments.last().unwrap().id, SegmentId::Tps);
+        assert!(changes.colors.background.is_some());
+        assert_eq!(cfg.segments.last().unwrap().id, SegmentId::Changes);
         let enabled_after: Vec<_> = cfg
             .segments
             .iter()

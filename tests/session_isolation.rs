@@ -1,126 +1,316 @@
+use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct Fixture(PathBuf);
-
 impl Fixture {
-    fn new() -> Self {
-        let home =
-            std::env::temp_dir().join(format!("ksl-session-isolation-{}", std::process::id()));
-        std::fs::create_dir_all(home.join("kimi-statusline")).unwrap();
-        std::fs::write(
-            home.join("kimi-statusline/config.toml"),
-            "[[segments]]\nid = 'tps'\n[[segments]]\nid = 'usage'\n[[segments]]\nid = 'subagent'\n[[segments]]\nid = 'session'\n",
-        )
-        .unwrap();
-        let old = home.join("sessions/wd_demo/session_old");
-        std::fs::create_dir_all(old.join("agents/main")).unwrap();
-        std::fs::write(
-            old.join("state.json"),
-            r#"{"cwd":"/work/demo","createdAt":4102444800000}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            old.join("agents/main/wire.jsonl"),
-            concat!(
-                "{\"type\":\"usage.record\",\"usage\":{\"inputOther\":100,\"output\":420}}\n",
-                "{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"step.end\",\"usage\":{\"output\":420},\"llmStreamDurationMs\":10000},\"time\":100000}\n"
-            ),
-        )
-        .unwrap();
+    fn new(segments: &[&str]) -> Self {
+        let home = std::env::temp_dir().join(format!(
+            "cc-statusline-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(home.join("cc-statusline")).unwrap();
+        let config = segments
+            .iter()
+            .map(|id| format!("[[segments]]\nid = '{id}'\n"))
+            .collect::<String>();
+        std::fs::write(home.join("cc-statusline/config.toml"), config).unwrap();
         Self(home)
     }
-
-    fn run(&self, args: &[&str], session_id: &str) -> String {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_kimi-statusline"))
+    fn run(&self, args: &[&str], payload: &Value) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cc-statusline"))
             .args(args)
-            .env("KIMI_CODE_HOME", &self.0)
-            .env("KIMI_STATUSLINE_NO_COLOR", "1")
+            .env("CLAUDE_CONFIG_DIR", &self.0)
+            .env("CC_STATUSLINE_NO_COLOR", "1")
+            .env("COLUMNS", "1000")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        write!(
-            child.stdin.take().unwrap(),
+        write!(child.stdin.take().unwrap(), "{payload}").unwrap();
+        child.wait_with_output().unwrap()
+    }
+    fn text(&self, args: &[&str], payload: &Value) -> String {
+        let out = self.run(args, payload);
+        assert!(
+            out.status.success(),
             "{}",
-            serde_json::json!({"sessionId": session_id, "cwd": "/work/demo"})
-        )
-        .unwrap();
-        let result = child.wait_with_output().unwrap();
-        assert!(result.status.success(), "{:?}", result.stderr);
-        String::from_utf8(result.stdout).unwrap().trim().to_string()
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+    fn transcript(&self, id: &str) -> PathBuf {
+        let dir = self.0.join("projects/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(format!("{id}.jsonl"))
     }
 }
-
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+fn message(session: &str, id: &str, output: u64) -> String {
+    format!(
+        "{}\n",
+        json!({"type":"assistant","sessionId":session,"timestamp":"2026-01-01T00:00:00Z",
+        "message":{"id":id,"model":"Sonnet","usage":{"input_tokens":100,"output_tokens":output,"cache_read_input_tokens":900}}})
+    )
+}
+#[test]
+fn session_isolation_resume_and_preview() {
+    let f = Fixture::new(&["usage", "subagent"]);
+    let path = f.transcript("old");
+    std::fs::write(&path, message("old", "m1", 420)).unwrap();
+    let p = json!({"session_id":"old","transcript_path":path,"cwd":"/work/demo"});
+    let old = f.text(&[], &p);
+    assert!(old.contains("420") && old.contains("90%"), "{old}");
+    assert_eq!(f.text(&[], &p), old);
+    for id in ["", "new"] {
+        let p = json!({"session_id":id,"transcript_path":f.transcript(id)});
+        assert_eq!(f.text(&[], &p), "");
+    }
+    assert_eq!(f.text(&["preview", "--cwd", "/work/demo"], &json!({})), old);
+    assert_eq!(
+        f.text(
+            &["preview", "--cwd", "/work/demo", "--session", "missing"],
+            &json!({})
+        ),
+        ""
+    );
+}
+#[test]
+fn partial_records_duplicate_messages_and_truncation() {
+    let f = Fixture::new(&["usage"]);
+    let path = f.transcript("one");
+    let p = json!({"session_id":"one","transcript_path":path});
+    std::fs::write(&path, message("one", "m1", 10)).unwrap();
+    assert!(f.text(&[], &p).contains("↓ 10"));
+    let line = message("one", "m1", 20);
+    let cut = line.len() / 2;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(&line.as_bytes()[..cut]).unwrap();
+    assert!(f.text(&[], &p).contains("↓ 10"));
+    file.write_all(&line.as_bytes()[cut..]).unwrap();
+    let updated = f.text(&[], &p);
+    assert!(
+        updated.contains("↓ 20") && updated.contains("↑ 1.0k"),
+        "{updated}"
+    );
+    drop(file);
+    std::fs::write(&path, message("one", "m2", 7)).unwrap();
+    let reset = f.text(&[], &p);
+    assert!(reset.contains("↓ 7") && !reset.contains("↓ 20"), "{reset}");
+}
+#[test]
+fn subagents_are_scoped_to_parent_transcript() {
+    let f = Fixture::new(&["usage", "subagent"]);
+    let path = f.transcript("one");
+    std::fs::write(&path, message("one", "main", 100)).unwrap();
+    let agents = path.with_extension("").join("subagents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("agent-a.jsonl"),
+        message("one", "main", 100) + &message("one", "sub", 200),
+    )
+    .unwrap();
+    std::fs::write(
+        f.transcript("unrelated"),
+        message("unrelated", "other", 999),
+    )
+    .unwrap();
+    let text = f.text(&[], &json!({"session_id":"one","transcript_path":path}));
+    assert!(
+        text.contains("↓ 300") && text.contains("Sonnet ↑ 1.0k") && !text.contains("999"),
+        "{text}"
+    );
+}
+#[test]
+fn native_fields_render_without_credentials_or_transcript() {
+    let f = Fixture::new(&[
+        "model",
+        "context",
+        "cost",
+        "session",
+        "quota",
+        "output_style",
+        "changes",
+        "mode",
+    ]);
+    let text = f.text(&[], &json!({
+        "model":{"display_name":"Opus 4.6"},"effort":{"level":"high"},
+        "context_window":{"context_window_size":1000000,"used_percentage":12.5,
+            "current_usage":{"input_tokens":25000,"cache_read_input_tokens":100000,"output_tokens":10000}},
+        "cost":{"total_cost_usd":1.23,"total_duration_ms":65000,"total_lines_added":10,"total_lines_removed":2},
+        "rate_limits":{"five_hour":{"used_percentage":42},"seven_day":{"used_percentage":13},"spend_limit":{"used_percentage":123}},
+        "output_style":{"name":"Explanatory"},"vim":{"mode":"NORMAL"},"fast_mode":true
+    }));
+    for expected in [
+        "Opus 4.6 high",
+        "ctx 13% (125.0k/1.00M)",
+        "$1.23",
+        "1m",
+        "5h 42%",
+        "7d 13%",
+        "spend 123%",
+        "Explanatory",
+        "+10 -2",
+        "NORMAL fast",
+    ] {
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+    assert!(!f.0.join("cc-statusline-cache/quota.lock").exists());
+}
 
 #[test]
-fn live_sessions_do_not_inherit_previous_stats_but_preview_can_select_latest() {
-    let f = Fixture::new();
-    let old = f.run(&[], "old");
-    assert!(old.contains("42.0 tok/s") && old.contains("420"), "{old}");
-    assert_eq!(f.run(&[], "old"), old, "resuming uses the session's cache");
-
-    assert_eq!(f.run(&[], "brand-new"), "", "not-yet-created session");
-    assert_eq!(f.run(&[], ""), "", "startup before lazy session creation");
-    let preview = ["preview", "--cwd", "/work/demo"];
-    assert_eq!(
-        f.run(&preview, ""),
-        old,
-        "preview explicitly selects latest"
-    );
-    assert_eq!(
-        f.run(
-            &["preview", "--cwd", "/work/demo", "--session", "missing"],
-            ""
-        ),
-        "",
-        "an explicit preview session must not select a different session"
-    );
-
-    // Releases before this fix could store another session's stats under a
-    // new ID. Even that legacy cache must not populate a fresh session.
-    let cache = f.0.join("kimi-statusline-cache");
-    let old_cache = std::fs::read_dir(&cache)
-        .unwrap()
-        .filter_map(Result::ok)
-        .find(|e| e.file_name().to_string_lossy().starts_with("session-"))
-        .unwrap();
-    // v0.4.0 named this cache using FNV-1a("brand-new").
-    std::fs::copy(
-        old_cache.path(),
-        cache.join("session-75524ed797ecf1ed.json"),
-    )
-    .unwrap();
-    std::fs::create_dir_all(f.0.join("sessions/wd_demo/session_brand-new/agents/main")).unwrap();
-    assert_eq!(
-        f.run(&[], "brand-new"),
-        "",
-        "fresh session with legacy cache"
-    );
+fn git_reports_changes_and_detached_head() {
+    let f = Fixture::new(&["git"]);
     std::fs::write(
-        f.0.join("sessions/wd_demo/session_brand-new/agents/main/wire.jsonl"),
-        concat!(
-            "{\"type\":\"usage.record\",\"usage\":{\"inputOther\":50,\"output\":120}}\n",
-            "{\"type\":\"context.append_loop_event\",\"event\":{\"type\":\"step.end\",\"usage\":{\"output\":120},\"llmStreamDurationMs\":2000},\"time\":200000}\n"
-        ),
+        f.0.join("cc-statusline/config.toml"),
+        "[[segments]]\nid = 'git'\noptions = { pr = false }\n",
     )
     .unwrap();
-    let fresh = f.run(&[], "brand-new");
-    assert!(
-        fresh.contains("60.0 tok/s") && fresh.contains("120"),
-        "{fresh}"
+    let repo = f.0.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("file.txt"), "old\n").unwrap();
+    git(&["add", "file.txt"]);
+    git(&["commit", "-qm", "initial"]);
+    std::fs::write(repo.join("file.txt"), "new\nextra\n").unwrap();
+    let p = json!({"workspace":{"current_dir":repo}});
+    let text = f.text(&[], &p);
+    assert!(text.contains("main [+2 -1]"), "{text}");
+    git(&["checkout", "-q", "--detach"]);
+    let head = git(&["rev-parse", "--short", "HEAD"]);
+    let text = f.text(&[], &p);
+    assert!(text.starts_with(head.trim()), "{text}");
+}
+
+#[cfg(unix)]
+#[test]
+fn install_preserves_private_settings_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new(&[]);
+    let path = f.0.join("settings.json");
+    std::fs::write(&path, "{}").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    f.text(&["install"], &json!({}));
+    for file in [path.clone(), path.with_extension("json.bak")] {
+        assert_eq!(
+            std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+#[test]
+fn install_preserves_settings_and_uninstall_owns_only_its_command() {
+    let f = Fixture::new(&[]);
+    let path = f.0.join("settings.json");
+    let original = br#"{"env":{"A":"B"},"permissions":{"allow":["Read"]},"statusLine":{"type":"command","command":"echo cc-statusline-other"}}"#;
+    std::fs::write(&path, original).unwrap();
+    assert!(!f.run(&["install"], &json!({})).status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    f.text(&["uninstall"], &json!({}));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    f.text(
+        &[
+            "install",
+            "--force",
+            "--command",
+            "custom-status-command --render",
+        ],
+        &json!({}),
     );
-    assert!(!fresh.contains("42.0") && !fresh.contains("420"), "{fresh}");
     assert_eq!(
-        f.run(&[], "old"),
-        old,
-        "original session is still resumable"
+        std::fs::read(path.with_extension("json.bak")).unwrap(),
+        original
     );
+    let installed: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(installed["env"]["A"], "B");
+    assert_eq!(installed["permissions"]["allow"][0], "Read");
+    assert_eq!(
+        installed["statusLine"]["command"],
+        "custom-status-command --render"
+    );
+    f.text(
+        &["install", "--command", "custom-status-command --render"],
+        &json!({}),
+    );
+    assert_eq!(
+        std::fs::read(path.with_extension("json.bak")).unwrap(),
+        original,
+        "idempotent install preserves backup"
+    );
+    f.text(&["uninstall"], &json!({}));
+    let removed: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(removed.get("statusLine").is_none());
+    assert_eq!(removed["env"], installed["env"]);
+}
+#[test]
+fn malformed_settings_are_never_overwritten() {
+    let f = Fixture::new(&[]);
+    let path = f.0.join("settings.json");
+    for bytes in ["{broken", "[]", "null"] {
+        std::fs::write(&path, bytes).unwrap();
+        assert!(!f.run(&["install", "--force"], &json!({})).status.success());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+    }
+}
+#[test]
+fn themes_fit_narrow_widths_and_sanitize_labels() {
+    let f = Fixture::new(&[]);
+    let p = json!({"model":{"display_name":"Claude\nInjected\u{001b}x"},"cwd":"/中文/project",
+        "context_window":{"context_window_size":200000,"used_percentage":50},"cost":{"total_cost_usd":0.12}});
+    for theme in [
+        "claude",
+        "minimal",
+        "cometix",
+        "default",
+        "nord",
+        "gruvbox",
+        "powerline-dark",
+        "powerline-light",
+        "powerline-rose-pine",
+        "powerline-tokyo-night",
+    ] {
+        for width in [0, 1, 12, 40, 160] {
+            let text = f.text(&["--theme", theme, "--width", &width.to_string()], &p);
+            assert!(!text.contains(['\n', '\r', '\x1b']), "{theme}: {text:?}");
+            assert!(
+                unicode_width::UnicodeWidthStr::width(text.as_str()) <= width,
+                "{theme} {width}: {text}"
+            );
+        }
+    }
 }

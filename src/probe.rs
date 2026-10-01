@@ -1,6 +1,6 @@
 //! Slow or file-heavy probes, each backed by a small TTL file cache so the
-//! 300ms budget only pays for them occasionally: git working-tree status,
-//! background task counts, terminal width.
+//! foreground budget only pays for them occasionally: git working-tree status,
+//! PR information and terminal width.
 
 use crate::paths;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -163,56 +163,10 @@ pub fn git_status(cwd: &str, over_budget: bool) -> Option<GitStatus> {
 }
 
 // ---------------------------------------------------------------------------
-// background tasks
-// ---------------------------------------------------------------------------
-
-const TASKS_TTL: f64 = 2.0;
-
-/// (bash, agent) running background-task counts from
-/// `agents/*/tasks/{bash,agent}-*.json`.
-pub fn running_tasks(session_dir: &Path) -> (u32, u32) {
-    let name = format!(
-        "tasks-{}.json",
-        paths::short_hash(&session_dir.to_string_lossy())
-    );
-    if let (Some(v), false) = cached::<(u32, u32)>(&name, TASKS_TTL) {
-        return v;
-    }
-    let (mut bash, mut agent) = (0, 0);
-    for agent_dir in crate::session::read_dirs(&session_dir.join("agents")) {
-        let Ok(rd) = std::fs::read_dir(agent_dir.join("tasks")) else {
-            continue;
-        };
-        for e in rd.filter_map(Result::ok) {
-            let fname = e.file_name().to_string_lossy().into_owned();
-            let is_bash = fname.starts_with("bash-");
-            if !fname.ends_with(".json") || !(is_bash || fname.starts_with("agent-")) {
-                continue;
-            }
-            let running = crate::session::read_json(&e.path())
-                .and_then(|v| v.get("status")?.as_str().map(|s| s == "running"))
-                .unwrap_or(false);
-            if running {
-                if is_bash {
-                    bash += 1;
-                } else {
-                    agent += 1;
-                }
-            }
-        }
-    }
-    store(&name, &(bash, agent));
-    (bash, agent)
-}
-
-// ---------------------------------------------------------------------------
 // terminal width
 // ---------------------------------------------------------------------------
 
-/// Best-effort width of the terminal the TUI runs in. The snapshot carries
-/// none and stdout is a pipe; worse, kimi-code spawns the command in its own
-/// session (detached: true), so `/dev/tty` usually fails. Fall back to the
-/// tty of the nearest ancestor that has one, then `$COLUMNS`.
+/// Best-effort terminal width, including shells without a controlling TTY.
 pub fn terminal_width() -> Option<usize> {
     #[cfg(unix)]
     {
@@ -303,9 +257,7 @@ fn proc_info(pid: u32) -> Option<(u32, Option<String>)> {
     Some((ppid, tty))
 }
 
-/// kimi-code spawns the command detached (its own session, no controlling
-/// tty) while the TUI itself sits on a real terminal a few hops up.
-#[cfg(unix)]
+/// Walk ancestors when this command has no controlling terminal.
 fn ancestor_tty_columns() -> Option<usize> {
     // SAFETY: getppid has no preconditions.
     let mut pid = unsafe { libc::getppid() } as u32;
@@ -356,7 +308,7 @@ fn which(cmd: &str) -> Option<std::path::PathBuf> {
 }
 
 /// The branch's open PR. `gh` needs a network round trip (upstream allows it
-/// 5s), far past our 300ms, so it is spawned detached with stdout aimed at a
+/// 5s), beyond our foreground budget, so it is spawned detached with stdout aimed at a
 /// side file, and a later run adopts the answer. The stale value keeps
 /// rendering meanwhile, and a value is only trusted for the branch it was
 /// fetched on.
@@ -431,7 +383,7 @@ fn spawn_gh(cwd: &str, out: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // own process group: the TUI kills ours at 300ms, gh must survive
+        // own process group: foreground rendering may exit first, gh must survive
         cmd.process_group(0);
     }
     #[cfg(windows)]
@@ -442,84 +394,4 @@ fn spawn_gh(cwd: &str, out: &Path) {
         cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
     }
     let _ = cmd.spawn();
-}
-
-// ---------------------------------------------------------------------------
-// /dance easter egg
-// ---------------------------------------------------------------------------
-
-/// Flow window of upstream's DANCE_FLOW_MS.
-pub const DANCE_FLOW_S: f64 = 3.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dance {
-    /// rainbow flowing (first ~3s after any /dance)
-    Flow,
-    /// frozen static rainbow (/dance on)
-    Hold,
-}
-
-/// Reconstruct the /dance state from the per-cwd input history
-/// (`<home>/user-history/md5(workDir).jsonl`), where every submitted slash
-/// command lands. Follows upstream tryHandleDanceCommand: `/dance off` clears,
-/// `/dance on` flows then holds, anything else flows then fades. Entries
-/// carry no timestamp, so the flow window is reckoned from the file's mtime.
-pub fn dance_state(cwd: &str) -> Option<Dance> {
-    if cwd.is_empty() {
-        return None;
-    }
-    let dir = paths::kimi_home().join("user-history");
-    let mut variants = vec![cwd.to_string(), cwd.replace('\\', "/")];
-    if cfg!(windows) {
-        variants.push(cwd.replace('/', "\\"));
-    }
-    let path = variants
-        .iter()
-        .map(|v| dir.join(format!("{:x}.jsonl", md5::compute(v.as_bytes()))))
-        .find(|p| p.is_file())?;
-
-    let mut f = std::fs::File::open(&path).ok()?;
-    let len = f.metadata().ok()?.len();
-    let mut tail = Vec::new();
-    use std::io::{Read, Seek, SeekFrom};
-    f.seek(SeekFrom::Start(len.saturating_sub(8192))).ok()?;
-    f.read_to_end(&mut tail).ok()?;
-
-    let mut last = None;
-    for line in String::from_utf8_lossy(&tail).lines() {
-        if !line.contains("dance") {
-            continue;
-        }
-        let Some(content) = serde_json::from_str::<serde_json::Value>(line)
-            .ok()
-            .and_then(|v| v.get("content")?.as_str().map(|s| s.trim().to_string()))
-        else {
-            continue;
-        };
-        let Some(sub) = content.strip_prefix("/dance") else {
-            continue;
-        };
-        if !(sub.is_empty() || sub.starts_with(char::is_whitespace)) {
-            continue;
-        }
-        last = match sub.trim().to_lowercase().as_str() {
-            "off" => None,
-            "on" => Some(true),
-            _ => Some(false),
-        };
-    }
-    let hold = last?;
-    let age = std::fs::metadata(&path)
-        .ok()?
-        .modified()
-        .ok()?
-        .elapsed()
-        .map_or(0.0, |d| d.as_secs_f64());
-    if age <= DANCE_FLOW_S + 0.5 {
-        Some(Dance::Flow)
-    } else if hold {
-        Some(Dance::Hold)
-    } else {
-        None
-    }
 }
