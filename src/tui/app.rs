@@ -112,6 +112,10 @@ struct Press {
 /// Plausible numbers for whatever the current directory's session lacks, so
 /// every segment shows up in the preview.
 fn fill_demo(ctx: &mut Ctx) {
+    ctx.tps.get_or_insert(crate::tps::Estimate {
+        tokens_per_sec: 42.0,
+        measured_at: ctx.now,
+    });
     let u = |i, o, c| Usage {
         input_other: i,
         output: o,
@@ -1327,6 +1331,7 @@ fn segment_help(id: SegmentId) -> &'static str {
         SegmentId::Subagent => "Usage of the heaviest sub-agent model.",
         SegmentId::Session => "Time since the session was created.",
         SegmentId::Changes => "Lines added and removed during this session.",
+        SegmentId::Tps => "Approximate output tokens per second of API time, including first-token wait and retries. Uses deduplicated transcript output deltas, including visible subagents. Needs two complete samples; idle readings dim after stale_secs. This is not decode speed or parallel wall-clock throughput.",
         SegmentId::Quota => {
             "5h / 7d quota from Claude Code; optional OAuth fallback for older clients."
         }

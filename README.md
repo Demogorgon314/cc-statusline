@@ -37,6 +37,7 @@ The automatic installer uses the quoted absolute executable path, so PATH config
 
 - Native Claude JSON input: model, reasoning effort, context, cost, duration, output style, code changes, Vim/agent/fast-mode badges, PR links, and rate limits.
 - Incremental transcript accounting: cumulative input/output tokens, cache hit rate, and the busiest subagent model. Split assistant messages are deduplicated by `message.id`.
+- Estimated API output throughput (`≈42 tok/s`), sampled from token and API-time deltas.
 - Git branch, detached HEAD, working-tree changes, conflicts, ahead/behind, and optional open PR lookup through `gh`.
 - Ten themes, plain/Nerd Font/powerline styles, custom colors and icons, English/Chinese labels, width fitting, and a keyboard/mouse configurator.
 - Safe install/uninstall, configuration backups, and checksum-verified binary updates.
@@ -80,10 +81,34 @@ Preview reuses the last payload observed for the requested directory. `--session
 | `session` | Claude's accumulated duration, falling back to transcript age (disabled by default) |
 | `quota` | Five-hour, seven-day and gateway spend limits, with reset times |
 | `changes` | Session lines added/removed (disabled by default) |
+| `tps` | Approximate output tokens per second of API request time |
 
-Context tokens count uncached input plus cache reads and writes, excluding output. Native `used_percentage` takes precedence. Session totals come from the transcript, because the meaning of `context_window.total_*_tokens` differs between Claude versions. Cost is Claude's estimate, not a separately calculated invoice. No decode-speed metric is inferred from API latency.
+Context tokens count uncached input plus cache reads and writes, excluding output. Native `used_percentage` takes precedence. Session totals come from the transcript, because the meaning of `context_window.total_*_tokens` differs between Claude versions. Cost is Claude's estimate, not a separately calculated invoice.
 
 The live renderer reads only `transcript_path` and its `<session>/subagents/*.jsonl` directory. Empty, missing, or mismatched sessions never inherit another session's statistics. First-time reads are bounded and catch up over successive refreshes; incomplete trailing records are retried later. Transcript truncation/replacement resets the affected cursor.
+
+### Estimated TPS
+
+`tps` displays `≈42 tok/s` (`≈42 t/s` in compact mode):
+
+```text
+Δ deduplicated transcript output tokens × 1000 / Δ cost.total_api_duration_ms
+```
+
+It includes visible subagent output, while shared parent messages count once. The denominator is Claude's accumulated API request time, including first-token waits and retries. Parallel requests contribute their individual durations; this measures request-time-normalized throughput, not parallel wall-clock throughput or pure decode speed. Independently updated logs/timers and API calls absent from transcripts make it an estimate.
+
+The first complete observation establishes a baseline. A value appears after both counters advance; idle refreshes retain the last value. Missing timing, partial logs, historical log catch-up, model changes, counter rollback, replaced logs, a changed set of subagent logs, or a sampling gap over 30 minutes require a new baseline. Preview reads the cached estimate without advancing the sampler.
+
+New default configurations enable TPS. For existing configurations, enable **TPS** in `cc-statusline config` or add:
+
+```toml
+[[segments]]
+id = "tps"
+enabled = true
+options = { stale_secs = 300, hide_when_stale = false }
+```
+
+After five minutes without a new measurement the estimate dims. Set `hide_when_stale = true` to hide it instead, or `stale_secs = 0` to disable dimming. Narrow layouts may drop TPS to keep the model and token usage visible.
 
 ## Configuration
 

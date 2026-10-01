@@ -11,6 +11,7 @@ mod quota;
 mod render;
 mod session;
 mod themes;
+mod tps;
 mod tui;
 mod update;
 

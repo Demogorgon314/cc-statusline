@@ -62,6 +62,139 @@ fn message(session: &str, id: &str, output: u64) -> String {
         "message":{"id":id,"model":"Sonnet","usage":{"input_tokens":100,"output_tokens":output,"cache_read_input_tokens":900}}})
     )
 }
+
+fn append(path: &std::path::Path, text: &str) {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+}
+
+#[test]
+fn tps_can_measure_the_first_request_after_an_empty_transcript() {
+    let f = Fixture::new(&["tps"]);
+    let path = f.transcript("new");
+    std::fs::write(&path, "").unwrap();
+    let mut p = json!({"session_id":"new","transcript_path":path,
+        "cost":{"total_api_duration_ms":0}});
+    assert_eq!(f.text(&[], &p), "");
+    append(&path, &message("new", "first", 420));
+    p["cost"]["total_api_duration_ms"] = json!(10000);
+    assert_eq!(f.text(&[], &p), "≈42 tok/s");
+}
+
+#[test]
+fn tps_uses_session_deltas_including_deduplicated_subagents() {
+    let f = Fixture::new(&["tps"]);
+    let path = f.transcript("one");
+    std::fs::write(&path, message("one", "main-1", 100)).unwrap();
+    let agents = path.with_extension("").join("subagents");
+    std::fs::create_dir_all(&agents).unwrap();
+    let agent = agents.join("agent-a.jsonl");
+    std::fs::write(
+        &agent,
+        message("one", "main-1", 100) + &message("one", "sub-1", 50),
+    )
+    .unwrap();
+    let mut p = json!({"session_id":"one","transcript_path":path,"cwd":"/work/tps",
+        "model":{"display_name":"Opus"},
+        "cost":{"total_api_duration_ms":1000},
+        "context_window":{"total_output_tokens":999999}});
+    assert_eq!(
+        f.text(&[], &p),
+        "",
+        "first complete observation is a baseline"
+    );
+    append(&path, &message("one", "main-2", 220));
+    append(&agent, &message("one", "sub-2", 200));
+    assert_eq!(
+        f.text(&[], &p),
+        "",
+        "wait for the matching API-time increment"
+    );
+    p["cost"]["total_api_duration_ms"] = json!(11000);
+    assert_eq!(f.text(&[], &p), "≈42 tok/s");
+    append(&path, &message("one", "main-2", 220));
+    assert_eq!(
+        f.text(&[], &p),
+        "≈42 tok/s",
+        "duplicate records and idle keep the last sample"
+    );
+    assert_eq!(
+        f.text(&["preview", "--cwd", "/work/tps"], &json!({})),
+        "≈42 tok/s"
+    );
+
+    let other = json!({"session_id":"other","transcript_path":f.transcript("other"),
+        "cost":{"total_api_duration_ms":5000}});
+    assert_eq!(
+        f.text(&[], &other),
+        "",
+        "new sessions cannot inherit a cached speed"
+    );
+    p["cost"]["total_api_duration_ms"] = json!(100);
+    assert_eq!(f.text(&[], &p), "", "a resumed/reset timer rebaselines");
+    append(&path, &message("one", "main-3", 100));
+    p["cost"]["total_api_duration_ms"] = json!(2100);
+    assert_eq!(f.text(&[], &p), "≈50 tok/s");
+
+    p["cost"] = json!({});
+    assert_eq!(
+        f.text(&[], &p),
+        "",
+        "missing timing data hides the estimate"
+    );
+    p["cost"]["total_api_duration_ms"] = json!(2100);
+    assert_eq!(f.text(&[], &p), "", "restored timing starts a new baseline");
+}
+
+#[test]
+fn tps_rebaselines_after_partial_records_and_historical_catchup() {
+    let f = Fixture::new(&["tps"]);
+    let path = f.transcript("one");
+    std::fs::write(&path, message("one", "m1", 100)).unwrap();
+    let mut p =
+        json!({"session_id":"one","transcript_path":path,"cost":{"total_api_duration_ms":1000}});
+    assert_eq!(f.text(&[], &p), "");
+    let next = message("one", "m2", 420);
+    append(&path, next.trim_end());
+    p["cost"]["total_api_duration_ms"] = json!(11000);
+    assert_eq!(
+        f.text(&[], &p),
+        "",
+        "partially written transcripts are not synchronized samples"
+    );
+    append(&path, "\n");
+    assert_eq!(f.text(&[], &p), "", "EOF catch-up establishes a baseline");
+    append(&path, &message("one", "m3", 420));
+    p["cost"]["total_api_duration_ms"] = json!(21000);
+    assert_eq!(f.text(&[], &p), "≈42 tok/s");
+
+    let oversized = format!(
+        "{{\"type\":\"user\",\"content\":\"{}\"}}\n",
+        "x".repeat(4 * 1024 * 1024)
+    );
+    append(&path, &oversized);
+    append(&path, &message("one", "m4", 9000));
+    p["cost"]["total_api_duration_ms"] = json!(22000);
+    for _ in 0..5 {
+        assert_eq!(
+            f.text(&[], &p),
+            "",
+            "historical catch-up cannot become a TPS spike"
+        );
+    }
+    append(&path, &message("one", "m5", 100));
+    p["cost"]["total_api_duration_ms"] = json!(24000);
+    assert_eq!(f.text(&[], &p), "≈50 tok/s");
+
+    // Even a replacement with a higher token total must not be treated as new output.
+    std::fs::write(&path, message("one", "replacement", 50000)).unwrap();
+    p["cost"]["total_api_duration_ms"] = json!(25000);
+    assert_eq!(f.text(&[], &p), "");
+}
 #[test]
 fn session_isolation_resume_and_preview() {
     let f = Fixture::new(&["usage", "subagent"]);

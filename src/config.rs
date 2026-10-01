@@ -102,10 +102,12 @@ pub enum SegmentId {
     Quota,
     /// Session lines added and removed
     Changes,
+    /// Approximate output throughput over API request time
+    Tps,
 }
 
 impl SegmentId {
-    pub const ALL: [SegmentId; 12] = [
+    pub const ALL: [SegmentId; 13] = [
         SegmentId::Mode,
         SegmentId::Cost,
         SegmentId::Model,
@@ -118,6 +120,7 @@ impl SegmentId {
         SegmentId::Session,
         SegmentId::Quota,
         SegmentId::Changes,
+        SegmentId::Tps,
     ];
 
     pub fn name(self) -> &'static str {
@@ -134,6 +137,7 @@ impl SegmentId {
             SegmentId::Session => "Session",
             SegmentId::Quota => "Quota",
             SegmentId::Changes => "Changes",
+            SegmentId::Tps => "TPS",
         }
     }
 }

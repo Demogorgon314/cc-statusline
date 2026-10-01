@@ -12,12 +12,15 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
     );
     let wants = |id| config.segment(id).is_some_and(|s| s.enabled);
     let now = paths::now_secs();
-    let stats =
-        if wants(SegmentId::Usage) || wants(SegmentId::Subagent) || wants(SegmentId::Session) {
-            session::collect(&payload.transcript_path, &payload.session_id)
-        } else {
-            None
-        };
+    let stats = if wants(SegmentId::Usage)
+        || wants(SegmentId::Subagent)
+        || wants(SegmentId::Session)
+        || wants(SegmentId::Tps)
+    {
+        session::collect(&payload.transcript_path, &payload.session_id)
+    } else {
+        None
+    };
     let session_created = payload
         .duration_ms
         .map(|ms| now - ms as f64 / 1000.0)
@@ -65,12 +68,16 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
         None
     };
     let effort = payload.effort.clone();
+    let tps = wants(SegmentId::Tps)
+        .then(|| crate::tps::get(&payload, stats.as_ref(), now))
+        .flatten();
     Ctx {
         payload,
         config,
         palette,
         models: Models::load(),
         stats,
+        tps,
         effort,
         session_created,
         git,
@@ -93,6 +100,7 @@ pub fn sample_payload(cwd: &str, session_id: Option<String>) -> Payload {
         p = Payload::default();
     }
     p.cwd = cwd.to_string();
+    p.is_preview = true;
     if p.model.is_empty() {
         p.model = "Claude".into();
     }

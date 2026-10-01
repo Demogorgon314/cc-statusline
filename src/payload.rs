@@ -18,6 +18,9 @@ pub struct Payload {
     pub mode: String,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<u64>,
+    pub api_duration_ms: Option<u64>,
+    /// Preview snapshots must not advance the live throughput sampler.
+    pub is_preview: bool,
     pub lines_added: u64,
     pub lines_removed: u64,
     pub output_style: String,
@@ -123,6 +126,10 @@ pub fn parse(buf: &[u8]) -> Payload {
             .and_then(Value::as_f64)
             .filter(|v| *v >= 0.0),
         duration_ms: v.pointer("/cost/total_duration_ms").and_then(Value::as_u64),
+        api_duration_ms: v
+            .pointer("/cost/total_api_duration_ms")
+            .and_then(Value::as_u64),
+        is_preview: false,
         lines_added: n("/cost/total_lines_added"),
         lines_removed: n("/cost/total_lines_removed"),
         output_style: s("/output_style/name"),

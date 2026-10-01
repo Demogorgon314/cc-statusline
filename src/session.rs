@@ -50,6 +50,10 @@ pub struct SessionStats {
     pub total: Usage,
     pub sub_by_model: BTreeMap<String, Usage>,
     pub created: Option<f64>,
+    /// All discovered logs reached EOF with no partial records.
+    pub complete: bool,
+    /// Changes when a transcript is replaced/truncated or agents appear/disappear.
+    pub source: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -57,6 +61,8 @@ struct Cursor {
     offset: u64,
     skipping: bool,
     identity: String,
+    #[serde(default)]
+    revision: u64,
     prefix: Vec<u8>,
     created: Option<f64>,
     messages: BTreeMap<String, (String, Usage)>,
@@ -81,9 +87,11 @@ fn identity(meta: &std::fs::Metadata) -> String {
 
 /// At most 4 MiB per file per refresh. Partial records remain unconsumed;
 /// oversized tool-result records are skipped without allocating their full size.
-fn advance(path: &Path, cursor: &mut Cursor, session_id: &str) {
-    let Ok(mut f) = File::open(path) else { return };
-    let Ok(meta) = f.metadata() else { return };
+fn advance(path: &Path, cursor: &mut Cursor, session_id: &str) -> bool {
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let Ok(meta) = f.metadata() else { return false };
     let id = identity(&meta);
     let mut prefix = vec![0; cursor.prefix.len()];
     if f.read_exact(&mut prefix).is_err() {
@@ -92,6 +100,7 @@ fn advance(path: &Path, cursor: &mut Cursor, session_id: &str) {
     if id != cursor.identity || meta.len() < cursor.offset || prefix != cursor.prefix {
         *cursor = Cursor {
             identity: id,
+            revision: cursor.revision.saturating_add(1),
             ..Default::default()
         };
     }
@@ -100,11 +109,11 @@ fn advance(path: &Path, cursor: &mut Cursor, session_id: &str) {
         let _ = (&mut f).take(256).read_to_end(&mut cursor.prefix);
     }
     if f.seek(SeekFrom::Start(cursor.offset)).is_err() {
-        return;
+        return false;
     }
     let mut buf = Vec::new();
     if f.take(4 * 1024 * 1024).read_to_end(&mut buf).is_err() {
-        return;
+        return false;
     }
     let mut consumed = 0;
     for (at, byte) in buf.iter().enumerate() {
@@ -123,6 +132,7 @@ fn advance(path: &Path, cursor: &mut Cursor, session_id: &str) {
         consumed = buf.len();
     }
     cursor.offset += consumed as u64;
+    !cursor.skipping && cursor.offset == meta.len()
 }
 
 fn record(line: &[u8], cursor: &mut Cursor, session_id: &str) {
@@ -189,20 +199,29 @@ pub fn collect(transcript: &str, session_id: &str) -> Option<SessionStats> {
     let mut files = vec![path.to_path_buf()];
     // The subagent directory belongs to this transcript, never the latest session.
     let subdir = path.with_extension("").join("subagents");
-    if let Ok(entries) = std::fs::read_dir(subdir) {
-        files.extend(
-            entries
-                .filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e == "jsonl")),
-        );
+    let mut complete = true;
+    match std::fs::read_dir(subdir) {
+        Ok(entries) => {
+            for entry in entries {
+                match entry {
+                    Ok(e) if e.path().extension().is_some_and(|e| e == "jsonl") => {
+                        files.push(e.path())
+                    }
+                    Ok(_) => {}
+                    Err(_) => complete = false,
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => complete = false,
     }
     let start = Instant::now();
     for file in &files {
         if start.elapsed() > Duration::from_millis(100) {
+            complete = false;
             break;
         }
-        advance(
+        complete &= advance(
             file,
             cache
                 .files
@@ -214,7 +233,16 @@ pub fn collect(transcript: &str, session_id: &str) -> Option<SessionStats> {
     cache
         .files
         .retain(|name, _| files.iter().any(|p| p.to_string_lossy() == *name));
-    let mut stats = SessionStats::default();
+    let sources: Vec<_> = cache
+        .files
+        .iter()
+        .map(|(name, cursor)| (name, &cursor.identity, cursor.revision))
+        .collect();
+    let mut stats = SessionStats {
+        complete,
+        source: paths::short_hash(&serde_json::to_string(&sources).unwrap_or_default()),
+        ..Default::default()
+    };
     let mut requests: BTreeMap<&str, (bool, &str, Usage)> = BTreeMap::new();
     for (file, cursor) in &cache.files {
         if file == transcript {

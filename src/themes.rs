@@ -47,6 +47,8 @@ fn icons(id: SegmentId, minimal: bool) -> (&'static str, &'static str) {
         (Quota, true) => ("◔", "\u{f0a9e}"),
         (Changes, false) => ("±", "\u{f440}"),
         (Changes, true) => ("±", "\u{f440}"),
+        (Tps, false) => ("", "\u{f04c5}"),
+        (Tps, true) => ("", "\u{f04c5}"),
     }
 }
 
@@ -71,6 +73,10 @@ fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
             put("show_cache", true.into());
         }
         SegmentId::Subagent => put("colorful", true.into()),
+        SegmentId::Tps => {
+            put("stale_secs", 300.into());
+            put("hide_when_stale", false.into());
+        }
         SegmentId::Quota => {
             put("show_5h", true.into());
             put("show_7d", true.into());
@@ -176,7 +182,7 @@ fn fg_theme(
     separator: &str,
     bold: bool,
     minimal: bool,
-    colors: [(Option<AnsiColor>, Option<AnsiColor>); 12],
+    colors: [(Option<AnsiColor>, Option<AnsiColor>); 13],
 ) -> Config {
     let specs = SegmentId::ALL
         .into_iter()
@@ -195,7 +201,7 @@ fn fg_theme(
 type Triple = (u8, u8, u8);
 
 /// powerline preset: one (fg, bg) pair per segment.
-fn pl_theme(name: &str, colors: [(Triple, Triple); 12]) -> Config {
+fn pl_theme(name: &str, colors: [(Triple, Triple); 13]) -> Config {
     let specs = SegmentId::ALL
         .into_iter()
         .zip(colors)
@@ -273,6 +279,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(2),
                     pair(3),
                     pair(10),
+                    pair(10),
                 ],
             );
             if name == "default" {
@@ -301,6 +308,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(2),
                     pair(3),
                     pair(10),
+                    pair(10),
                 ],
             )
         }
@@ -325,6 +333,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(142),
                     pair(214),
                     pair(108),
+                    pair(108),
                 ],
             )
         }
@@ -344,6 +353,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                     (143, 188, 187),
                     (163, 190, 140),
                     (235, 203, 139),
+                    (136, 192, 208),
                     (136, 192, 208),
                 ])
                 .map(|(id, (r, g, b))| Spec {
@@ -371,6 +381,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((163, 190, 140), (45, 50, 59)),
                 ((224, 175, 104), (40, 44, 52)),
                 ((136, 192, 208), (40, 50, 60)),
+                ((136, 192, 208), (40, 50, 60)),
             ],
         ),
         "powerline-light" => pl_theme(
@@ -387,6 +398,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((0, 0, 0), (255, 193, 7)),
                 ((255, 255, 255), (40, 167, 69)),
                 ((0, 0, 0), (255, 193, 7)),
+                ((255, 255, 255), (0, 123, 255)),
                 ((255, 255, 255), (0, 123, 255)),
             ],
         ),
@@ -405,6 +417,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((156, 207, 216), (42, 39, 63)),
                 ((246, 193, 119), (35, 33, 54)),
                 ((156, 207, 216), (25, 23, 36)),
+                ((156, 207, 216), (25, 23, 36)),
             ],
         ),
         "powerline-tokyo-night" => pl_theme(
@@ -421,6 +434,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((187, 154, 247), (32, 35, 52)),
                 ((158, 206, 106), (41, 46, 66)),
                 ((224, 175, 104), (36, 40, 59)),
+                ((125, 207, 255), (25, 27, 41)),
                 ((125, 207, 255), (25, 27, 41)),
             ],
         ),

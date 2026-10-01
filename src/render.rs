@@ -26,6 +26,7 @@ pub struct Ctx {
     pub palette: Palette,
     pub models: Models,
     pub stats: Option<SessionStats>,
+    pub tps: Option<crate::tps::Estimate>,
     /// effort from the wire, else the model's default_effort
     pub effort: Option<serde_json::Value>,
     pub session_created: Option<f64>,
@@ -210,6 +211,21 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
         }
         SegmentId::OutputStyle => {
             (!p.output_style.is_empty()).then(|| vec![plain(&p.output_style)])
+        }
+        SegmentId::Tps => {
+            let estimate = ctx.tps?;
+            let stale_secs = seg.opt_int("stale_secs", 300);
+            let stale = stale_secs > 0 && ctx.now - estimate.measured_at > stale_secs as f64;
+            if stale && seg.opt_bool("hide_when_stale", false) {
+                return None;
+            }
+            let unit = if compact { "t/s" } else { "tok/s" };
+            Some(vec![Span {
+                text: format!("≈{:.0} {unit}", estimate.tokens_per_sec),
+                color: stale.then(|| token("text_muted")),
+                bold: false,
+                dim: stale,
+            }])
         }
         SegmentId::Directory => {
             if p.cwd.is_empty() {
@@ -539,10 +555,10 @@ fn paint_styled(ctx: &Ctx, text: &str, color: Option<&AnsiColor>, bold: bool, di
         codes.push(c);
     }
     // bold and faint share SGR 22 as their reset, which CLOSE_FG emits
-    if bold {
-        codes.push("1".into());
-    } else if dim {
+    if dim {
         codes.push("2".into());
+    } else if bold {
+        codes.push("1".into());
     }
     if codes.is_empty() {
         text.to_string()
@@ -631,8 +647,9 @@ pub fn render(ctx: &Ctx, width: Option<usize>) -> String {
         return full;
     }
     use SegmentId::*;
-    const DROP_ORDER: [SegmentId; 10] = [
+    const DROP_ORDER: [SegmentId; 11] = [
         Session,
+        Tps,
         Changes,
         Git,
         Directory,
@@ -734,6 +751,56 @@ fn truncate(s: &str, width: usize, color: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn estimated_tps_compacts_and_marks_idle_measurements() {
+        use ansi_to_tui::IntoText;
+        let is_dim = |line: &str| {
+            line.into_text()
+                .unwrap()
+                .lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| {
+                    span.style
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::DIM)
+                })
+        };
+        let mut config = crate::themes::builtin("claude").unwrap();
+        config.segments.retain(|s| s.id == SegmentId::Tps);
+        let mut ctx = Ctx {
+            payload: Payload::default(),
+            config,
+            palette: crate::appearance::DARK,
+            models: Models::default(),
+            stats: None,
+            tps: Some(crate::tps::Estimate {
+                tokens_per_sec: 42.0,
+                measured_at: 100.0,
+            }),
+            effort: None,
+            session_created: None,
+            git: None,
+            pr: None,
+            quota: None,
+            now: 110.0,
+            color: true,
+        };
+        let fresh = render(&ctx, None);
+        assert!(fresh.contains("≈42 tok/s") && !is_dim(&fresh));
+        let compact = render(&ctx, Some(7));
+        assert!(compact.contains("≈42 t/s"));
+        assert_eq!(visible_width(&compact), 7);
+        ctx.now = 500.0;
+        ctx.config.segments[0].styles.text_bold = true;
+        let idle = render(&ctx, None);
+        assert!(idle.contains("≈42 tok/s") && is_dim(&idle));
+        ctx.config.segments[0]
+            .options
+            .insert("hide_when_stale".into(), true.into());
+        assert_eq!(render(&ctx, None), "");
+    }
 
     #[test]
     fn tokens_and_rates() {
