@@ -127,13 +127,31 @@ def demo_env(home):
     return env
 
 
-def render(home, theme, width, light=False):
+def render(home, theme, width, light=False, hide=()):
     # Colors follow Claude Code's theme setting, as on a real light terminal.
     with open(os.path.join(home, "settings.json"), "w") as f:
         json.dump({"theme": "light" if light else "dark"}, f)
-    out = subprocess.run([BIN, "-t", theme, "--width", str(width)],
-                         input=json.dumps(PAYLOAD), text=True, capture_output=True,
-                         env=demo_env(home), check=True)
+    args = ["-t", theme]
+    if hide:
+        # Hiding segments needs a saved config; -t ignores it.
+        subprocess.run([BIN, "-t", theme, "init", "--force"], env=demo_env(home),
+                       capture_output=True, check=True)
+        path = os.path.join(home, "cc-statusline", "config.toml")
+        with open(path) as f:
+            text = f.read()
+        for seg in hide:
+            text = text.replace(f'id = "{seg}"\nenabled = true', f'id = "{seg}"\nenabled = false')
+        with open(path, "w") as f:
+            f.write(text)
+        args = []
+    try:
+        out = subprocess.run([BIN, *args, "--width", str(width)],
+                             input=json.dumps(PAYLOAD), text=True, capture_output=True,
+                             env=demo_env(home), check=True)
+    finally:
+        # The configurator screenshot reads the saved config.
+        if hide:
+            os.remove(path)
     return out.stdout.rstrip("\n")
 
 
@@ -255,9 +273,8 @@ def main():
     os.makedirs(ASSETS, exist_ok=True)
     home = setup_home()
     try:
-        hero = ansi_to_html(render(home, "powerline-light", 200, light=True), "#1a1a1a")
-        shoot(page(claude_footer(hero), "Claude Code — demo session", light=True, minw=1180),
-              "hero.png", 3000)
+        hero = ansi_to_html(render(home, "powerline-light", 200, hide=("subagent",)), "#e0e0e0")
+        shoot(page(claude_footer(hero), "Claude Code — demo session", minw=1180), "hero.png", 3000)
 
         rows = []
         for theme in ["claude", "cometix", "default", "minimal", "gruvbox", "nord", "powerline-dark",
