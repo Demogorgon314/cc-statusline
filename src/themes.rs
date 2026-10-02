@@ -123,11 +123,18 @@ fn tok(name: &str) -> Option<AnsiColor> {
     Some(AnsiColor::Named(name.into()))
 }
 
-/// Default enablement, shared by every preset.
+/// Default enablement, shared by every preset: what you act on (context,
+/// cache countdown, quota, cost) stays; running totals and throughput, which
+/// are long and rarely change a decision, start off.
 fn enabled(id: SegmentId, _claude: bool) -> bool {
     !matches!(
         id,
-        SegmentId::Session | SegmentId::OutputStyle | SegmentId::Changes
+        SegmentId::Session
+            | SegmentId::OutputStyle
+            | SegmentId::Changes
+            | SegmentId::Usage
+            | SegmentId::Subagent
+            | SegmentId::Tps
     )
 }
 
@@ -179,7 +186,8 @@ fn build(
             separator_color: None,
             palette: String::new(),
             width: 0,
-            wrap: false,
+            // a second line beats dropping segments
+            wrap: true,
         },
         segments,
     }
@@ -392,8 +400,8 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((152, 195, 121), (62, 66, 76)),
                 ((209, 213, 219), (40, 42, 48)),
                 ((125, 190, 245), (62, 66, 76)),
-                ((86, 182, 194), (40, 42, 48)),
-                ((198, 120, 221), (62, 66, 76)),
+                ((86, 182, 194), (62, 66, 76)),
+                ((198, 120, 221), (40, 42, 48)),
                 ((171, 178, 191), (62, 66, 76)),
                 ((229, 192, 123), (40, 42, 48)),
                 ((152, 195, 121), (40, 42, 48)),
@@ -430,8 +438,8 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((156, 207, 216), (64, 61, 82)),
                 ((224, 222, 244), (38, 35, 58)),
                 ((246, 193, 119), (64, 61, 82)),
-                ((196, 167, 231), (38, 35, 58)),
-                ((235, 188, 186), (64, 61, 82)),
+                ((196, 167, 231), (64, 61, 82)),
+                ((235, 188, 186), (38, 35, 58)),
                 ((156, 207, 216), (64, 61, 82)),
                 ((246, 193, 119), (38, 35, 58)),
                 ((156, 207, 216), (38, 35, 58)),
@@ -449,8 +457,8 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((195, 232, 141), (65, 72, 104)),
                 ((192, 202, 245), (41, 46, 66)),
                 ((232, 190, 128), (65, 72, 104)),
-                ((125, 207, 255), (41, 46, 66)),
-                ((187, 154, 247), (65, 72, 104)),
+                ((125, 207, 255), (65, 72, 104)),
+                ((187, 154, 247), (41, 46, 66)),
                 ((158, 206, 106), (65, 72, 104)),
                 ((232, 190, 128), (41, 46, 66)),
                 ((125, 207, 255), (41, 46, 66)),

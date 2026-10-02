@@ -88,7 +88,7 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 
 - **增量读取**会话日志：从缓存游标继续，每个文件最多读取 4 MiB，每次刷新解析预算为 100 ms；历史记录分多次刷新追上
 - 可选的 OAuth 额度刷新、`gh pr view` 都在**后台**做；Claude 原生额度无需额外请求
-- 终端变窄时**自动精简**，压缩显示并逐步去掉优先级较低的段；设置 `wrap = true` 则改为换到第二行显示（配置器中按 `L` 切换）
+- 终端变窄时**自动精简**，压缩显示并逐步去掉优先级较低的段；默认（`wrap = true`）改为换到第二行显示（配置器中按 `L` 切换）
 
 ![四种终端宽度下的自适应效果](assets/adaptive.png)
 
@@ -110,13 +110,13 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 | `directory` | 工作目录 |
 | `git` | 分支、改动统计、冲突、ahead/behind、打开的 PR（回退查询需要 `gh`） |
 | `context` | 主会话上下文占用百分比和输入 token / 容量（`ctx 62% · 620k/1M`）；`bar = true` 显示进度条（`ctx █████─── 62%`），`bar_width` 设置格数（默认 8） |
-| `usage` | 整个会话的输入 ↑ / 输出 ↓ token，包含子 agent（`↑611k ↓6.5k`） |
+| `usage` | 整个会话的输入 ↑ / 输出 ↓ token，包含子 agent（`↑611k ↓6.5k`；默认关闭） |
 | `cache` | 整个会话的 prompt cache 命中率（`show_rate`）和主对话缓存过期倒计时 `⏱ 52:10`（`show_ttl`），倒计时仅在 transcript 记录了 TTL 时显示 |
-| `subagent` | 子任务累计用量：输入最多的两个模型，其余显示 `+N 个模型`；紧凑模式显示子任务合计 |
+| `subagent` | 子任务累计用量：输入最多的两个模型，其余显示 `+N 个模型`；紧凑模式显示子任务合计（默认关闭） |
 | `session` | 累计会话时长（默认关闭） |
 | `quota` | 5h / 7d 额度、可选的网关消费上限和重置时间 |
 | `changes` | 会话新增 / 删除行数（默认关闭） |
-| `tps` | 近期每秒生成的输出：`≈42 tok/s`；最近 30 秒有三个日志在输出时附加 `×3`（紧凑模式为 `≈42 t/s ×3`） |
+| `tps` | 近期每秒生成的输出：`≈42 tok/s`；最近 30 秒有三个日志在输出时附加 `×3`（紧凑模式为 `≈42 t/s ×3`；默认关闭） |
 
 空间不够时按这个顺序去掉：session → changes → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode。
 
@@ -157,7 +157,7 @@ mode = "plain"          # plain | nerd_font | powerline
 separator = "  "        # "" 为 powerline 箭头
 palette = ""             # auto（跟随 Claude Code 主题）| dark | light | 自定义配色名
 width = 0              # 自动检测；--width 优先
-wrap = false           # true：宽度不够时换到下一行，而不是压缩隐藏
+wrap = true            # false：宽度不够时压缩并隐藏段，而不是换行
 
 [[segments]]
 id = "quota"

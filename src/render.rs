@@ -1083,6 +1083,8 @@ mod tests {
         };
         let mut config = crate::themes::builtin("claude").unwrap();
         config.segments.retain(|s| s.id == SegmentId::Tps);
+        config.segments[0].enabled = true;
+        config.style.wrap = false;
         let mut ctx = Ctx {
             payload: Payload::default(),
             config,
@@ -1131,6 +1133,8 @@ mod tests {
         config
             .segments
             .retain(|s| matches!(s.id, SegmentId::Usage | SegmentId::Cache));
+        config.segments[0].enabled = true;
+        config.style.wrap = false;
         let mut ctx = Ctx {
             payload: Payload::default(),
             config,

@@ -46,7 +46,7 @@ impl Default for StyleConfig {
             separator_color: None,
             palette: String::new(),
             width: 0,
-            wrap: false,
+            wrap: true,
         }
     }
 }

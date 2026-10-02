@@ -499,11 +499,18 @@ fn themes_fit_narrow_widths_and_sanitize_labels() {
     ] {
         for width in [0, 1, 12, 40, 160] {
             let text = f.text(&["--theme", theme, "--width", &width.to_string()], &p);
-            assert!(!text.contains(['\n', '\r', '\x1b']), "{theme}: {text:?}");
+            assert!(!text.contains(['\r', '\x1b']), "{theme}: {text:?}");
+            // themes wrap by default; the label's own newline never splits it
             assert!(
-                unicode_width::UnicodeWidthStr::width(text.as_str()) <= width,
-                "{theme} {width}: {text}"
+                !text.lines().any(|l| l.trim_start().starts_with("Injected")),
+                "{theme}: {text:?}"
             );
+            for line in text.lines() {
+                assert!(
+                    unicode_width::UnicodeWidthStr::width(line) <= width,
+                    "{theme} {width}: {text}"
+                );
+            }
         }
     }
 }

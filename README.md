@@ -88,7 +88,7 @@ cc-statusline is a single Rust binary. Work stays bounded as your session grows:
 
 - **Incremental transcript reads** resume from cached cursors, with a 4 MiB per-file read limit and a 100 ms parsing budget per refresh; older history catches up over successive refreshes
 - Optional OAuth quota refreshes and `gh pr view` run **in the background**; native quota needs no extra request
-- **Adaptive width** compacts the line and removes lower-priority segments as the terminal narrows, or with `wrap = true` continues on a second line (toggle with `L` in the configurator)
+- **Adaptive width** compacts the line and removes lower-priority segments as the terminal narrows, or by default (`wrap = true`) continues on a second line (toggle with `L` in the configurator)
 
 ![Adaptive status line at four terminal widths](assets/adaptive.png)
 
@@ -110,13 +110,13 @@ With parallel subagents, the footer shows their combined output rate and how man
 | `directory` | Working directory |
 | `git` | Branch, diff, conflicts, ahead/behind, open PR (fallback lookup needs `gh`) |
 | `context` | Main conversation context percentage and input tokens / capacity (`ctx 62% · 620k/1M`); `bar = true` adds a meter (`ctx █████─── 62%`), `bar_width` sets its cells (default 8) |
-| `usage` | Whole-session input ↑ / output ↓ tokens, including subagents (`↑611k ↓6.5k`) |
+| `usage` | Whole-session input ↑ / output ↓ tokens, including subagents (`↑611k ↓6.5k`; disabled by default) |
 | `cache` | Whole-session prompt cache hit rate (`show_rate`) and the main conversation's cache countdown `⏱ 52:10` (`show_ttl`), shown only when the transcript records its TTL |
-| `subagent` | Cumulative subagent usage: top two models by input, plus `+N models`; compact lines show the subagent total |
+| `subagent` | Cumulative subagent usage: top two models by input, plus `+N models`; compact lines show the subagent total (disabled by default) |
 | `session` | Accumulated session duration (disabled by default) |
 | `quota` | Five-hour / seven-day quota, optional gateway spend limit, reset times |
 | `changes` | Session lines added/removed (disabled by default) |
-| `tps` | Recent output per second of generation: `≈42 tok/s`, with `×3` when three logs produced output in the last 30 seconds (compact: `≈42 t/s ×3`) |
+| `tps` | Recent output per second of generation: `≈42 tok/s`, with `×3` when three logs produced output in the last 30 seconds (compact: `≈42 t/s ×3`; disabled by default) |
 
 When space runs out, segments drop in this order: session → changes → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode.
 
@@ -157,7 +157,7 @@ mode = "plain"          # plain | nerd_font | powerline
 separator = "  "        # "" for powerline arrows
 palette = ""            # auto (follows Claude Code's theme) | dark | light | custom palette name
 width = 0              # auto-detect; --width overrides this
-wrap = false           # true: continue on more lines instead of compacting
+wrap = true            # false: compact and drop segments instead of using more lines
 
 [[segments]]
 id = "quota"
