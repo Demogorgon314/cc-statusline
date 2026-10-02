@@ -32,7 +32,10 @@ impl Fixture {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        write!(child.stdin.take().unwrap(), "{payload}").unwrap();
+        // Commands that ignore stdin (install, uninstall) may exit first.
+        if let Err(e) = write!(child.stdin.take().unwrap(), "{payload}") {
+            assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
+        }
         child.wait_with_output().unwrap()
     }
     fn text(&self, args: &[&str], payload: &Value) -> String {
