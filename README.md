@@ -109,7 +109,7 @@ With parallel subagents, the footer shows their combined output rate and how man
 | `output_style` | Output style (disabled by default) |
 | `directory` | Working directory |
 | `git` | Branch, diff, conflicts, ahead/behind, open PR (fallback lookup needs `gh`) |
-| `context` | Main conversation context percentage and input tokens / capacity |
+| `context` | Main conversation context percentage and input tokens / capacity (`ctx 62% · 620k/1M`); `bar = true` adds a meter |
 | `usage` | Whole-session input ↑ / output ↓ / cache hit rate, including subagents |
 | `subagent` | Cumulative subagent usage: top two models by input, plus `+N models`; compact lines show the subagent total |
 | `session` | Accumulated session duration (disabled by default) |
@@ -119,7 +119,7 @@ With parallel subagents, the footer shows their combined output rate and how man
 
 When space runs out, segments drop in this order: session → changes → git → directory → subagent → tps → output_style → cost → context → quota → mode.
 
-`main ctx` counts the main conversation's input plus cache reads and writes, excluding output; Claude's native percentage takes precedence. Subagents have independent contexts and are not added to this percentage. Session totals come from the exact supplied transcript and its adjacent subagent logs, deduplicated by message ID. The `sub` segment includes finished tasks and groups them by model, not by agent; compact mode shows the largest model and a count of the rest. Incomplete totals are marked `≈` and dimmed. Missing sessions never inherit another session's statistics. Quota belongs to the account and can persist across sessions.
+`ctx` counts the main conversation's input plus cache reads and writes, excluding output; Claude's native percentage takes precedence. Subagents have independent contexts and are not added to this percentage. Session totals come from the exact supplied transcript and its adjacent subagent logs, deduplicated by message ID. The `sub` segment includes finished tasks and groups them by model, not by agent; compact mode shows the largest model and a count of the rest. Incomplete totals are marked `≈` and dimmed. Missing sessions never inherit another session's statistics. Quota belongs to the account and can persist across sessions.
 
 Preview and the configurator use the last observed payload for the current directory. `preview --session ID` only accepts a matching cached session. Before one is available, preview shows a generic Claude label; the configurator fills missing values with demo data.
 

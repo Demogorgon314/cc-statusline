@@ -98,6 +98,30 @@ pub fn fmt_tokens(n: u64) -> String {
     format!("{:.2}M", n as f64 / 1e6)
 }
 
+/// fmt_tokens without trailing zeros, for round capacities: `620k/1M`.
+fn fmt_tokens_short(n: u64) -> String {
+    let s = fmt_tokens(n);
+    if !s.contains('.') {
+        return s;
+    }
+    let (digits, unit) = s.split_at(s.len() - 1);
+    format!(
+        "{}{unit}",
+        digits.trim_end_matches('0').trim_end_matches('.')
+    )
+}
+
+/// An 8-cell share bar with a trailing space.
+fn meter(ratio: f64, color: Option<AnsiColor>) -> Span {
+    let filled = (ratio.clamp(0.0, 1.0) * 8.0).round() as usize;
+    Span {
+        text: format!("{}{} ", "█".repeat(filled), "░".repeat(8 - filled)),
+        color,
+        bold: false,
+        dim: false,
+    }
+}
+
 /// Modern providers sit at 95%+ almost always, so up there one decimal is
 /// kept; only a true 100% stays an integer.
 fn fmt_rate(r: f64) -> String {
@@ -320,22 +344,28 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             } else {
                 "success"
             };
-            let label = if zh { "主上下文 " } else { "main ctx " };
-            let text = if compact || !seg.opt_bool("show_tokens", true) {
-                format!("{}{pct}%", if zh { "主 " } else { "main " })
-            } else {
-                format!(
-                    "{label}{pct}% ({}/{})",
-                    fmt_tokens(p.context_tokens),
-                    fmt_tokens(p.max_context_tokens)
-                )
-            };
-            Some(vec![Span {
-                text,
-                color: seg.opt_bool("colorful", true).then(|| token(tok)),
+            let color = seg.opt_bool("colorful", true).then(|| token(tok));
+            let mut spans = vec![plain(if zh { "上下文 " } else { "ctx " })];
+            if seg.opt_bool("bar", false) && !compact {
+                spans.push(meter(ratio, color.clone()));
+            }
+            spans.push(Span {
+                text: format!("{pct}%"),
+                color,
                 bold: false,
                 dim: false,
-            }])
+            });
+            if !compact && seg.opt_bool("show_tokens", true) {
+                spans.push(colored(
+                    format!(
+                        " · {}/{}",
+                        fmt_tokens_short(p.context_tokens),
+                        fmt_tokens_short(p.max_context_tokens)
+                    ),
+                    token("text_muted"),
+                ));
+            }
+            Some(spans)
         }
         SegmentId::Usage => {
             let st = ctx.stats.as_ref()?;
@@ -419,14 +449,22 @@ fn usage_triple(ctx: &Ctx, seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec
     let pick = |c: AnsiColor| colorful.then_some(c);
     let mut spans = vec![
         Span {
-            text: format!("↑ {}", fmt_tokens(u.input())),
+            text: format!(
+                "↑{}{}",
+                if compact { "" } else { " " },
+                fmt_tokens(u.input())
+            ),
             color: pick(AnsiColor::Color16 { c16: 4 }),
             bold: false,
             dim: false,
         },
-        plain(if compact { "·" } else { " · " }),
+        plain(if compact { " " } else { " · " }),
         Span {
-            text: format!("↓ {}", fmt_tokens(u.output)),
+            text: format!(
+                "↓{}{}",
+                if compact { "" } else { " " },
+                fmt_tokens(u.output)
+            ),
             color: pick(AnsiColor::Color16 { c16: 5 }),
             bold: false,
             dim: false,
@@ -490,13 +528,7 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
         };
         spans.push(plain(format!("{label} ")));
         if bar {
-            let filled = (ratio.min(1.0) * 8.0).round() as usize;
-            spans.push(Span {
-                text: format!("{}{} ", "█".repeat(filled), "░".repeat(8 - filled)),
-                color: colorful.then(|| token(tok)),
-                bold: false,
-                dim: false,
-            });
+            spans.push(meter(ratio, colorful.then(|| token(tok))));
         }
         spans.push(Span {
             text: format!("{pct}%"),
@@ -918,6 +950,11 @@ mod tests {
         assert_eq!(fmt_tokens(1_234_567), "1.23M");
         assert_eq!(fmt_tokens(999_949), "999.9k");
         assert_eq!(fmt_tokens(999_950), "1.00M");
+        assert_eq!(fmt_tokens_short(1_000_000), "1M");
+        assert_eq!(fmt_tokens_short(620_000), "620k");
+        assert_eq!(fmt_tokens_short(1_500_000), "1.5M");
+        assert_eq!(fmt_tokens_short(12_345), "12.3k");
+        assert_eq!(fmt_tokens_short(999), "999");
         assert_eq!(fmt_duration(3_900), "1h05m");
         assert_eq!(fmt_rate(97.84), "97.8%");
         assert_eq!(fmt_rate(99.99), "99.9%");

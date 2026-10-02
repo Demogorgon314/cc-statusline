@@ -321,7 +321,7 @@ fn model_summary_is_ranked_and_main_context_is_independent() {
     }
     let p = json!({"session_id":"one","transcript_path":path,"context_window":{"context_window_size":200000,"used_percentage":20,"current_usage":{"input_tokens":40000}}});
     let text = f.text(&[], &p);
-    assert!(text.contains("main ctx 20% (40.0k/200.0k)"), "{text}");
+    assert!(text.contains("ctx 20% · 40k/200k"), "{text}");
     assert!(text.find("Sonnet").unwrap() < text.find("Opus").unwrap());
     assert!(text.contains("+1") && !text.contains("Haiku"), "{text}");
 }
@@ -348,7 +348,7 @@ fn native_fields_render_without_credentials_or_transcript() {
     }));
     for expected in [
         "Opus 5.5 [1M] high",
-        "ctx 13% (125.0k/1.00M)",
+        "ctx 13% · 125k/1M",
         "$1.23",
         "1m",
         "5h 42%",
