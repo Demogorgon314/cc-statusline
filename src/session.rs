@@ -579,20 +579,21 @@ mod tests {
         // Agents discovered after they already logged output still count.
         std::fs::write(&a, user(100.0) + &message("a1", 300, 110.0)).unwrap();
         std::fs::write(&b, user(100.0) + &message("b1", 600, 120.0)).unwrap();
+        // 900 tokens over the 20 s either agent was generating
         let stats = f.refresh(&mut cache, 130.0);
-        assert_eq!(rate(&stats), 30.0);
+        assert_eq!(rate(&stats), 45.0);
         assert_eq!(stats.tps.unwrap().measured_at, 120.0);
         // Observing the same logs later never adds output.
-        assert_eq!(rate(&f.refresh(&mut cache, 130.0)), 30.0);
+        assert_eq!(rate(&f.refresh(&mut cache, 130.0)), 45.0);
         // Split blocks extend the request instead of counting as new output.
         append(&a, &message("a1", 330, 130.0));
         assert_eq!(rate(&f.refresh(&mut cache, 130.0)), 31.0);
-        // Old history is outside the window; idle decays, then disappears.
+        // Old history is outside the window; idle keeps the last rate.
         let old = f.agents.join("old.jsonl");
         std::fs::write(&old, user(0.0) + &message("old", 9000, 10.0)).unwrap();
         assert_eq!(rate(&f.refresh(&mut cache, 130.0)), 31.0);
-        assert_eq!(rate(&f.refresh(&mut cache, 200.0)), 0.0);
-        assert!(f.refresh(&mut cache, 2000.0).tps.is_none());
+        assert_eq!(rate(&f.refresh(&mut cache, 200.0)), 31.0);
+        assert_eq!(rate(&f.refresh(&mut cache, 2000.0)), 31.0);
     }
 
     #[test]
@@ -614,8 +615,8 @@ mod tests {
         let mut cache = Cache::default();
         let stats = f.refresh(&mut cache, 130.0);
         assert_eq!(stats.total.output, 1800);
-        assert_eq!(stats.agent_tps["aa"].tokens_per_sec, 20.0);
-        assert_eq!(stats.agent_tps["bb"].tokens_per_sec, 0.0);
+        assert_eq!(stats.agent_tps["aa"].tokens_per_sec, 30.0);
+        assert_eq!(stats.agent_tps["bb"].tokens_per_sec, 90.0);
         assert!(!stats.agent_tps.contains_key("one"));
         // main and aa produced output inside the window; bb finished long ago
         assert_eq!(stats.active_logs, 2);
@@ -630,7 +631,7 @@ mod tests {
         let mut cache = Cache::default();
         let stats = f.refresh(&mut cache, 130.0);
         assert_eq!(stats.total.output, 300);
-        assert_eq!(rate(&stats), 10.0);
+        assert_eq!(rate(&stats), 30.0);
         assert_eq!(stats.tps.unwrap().measured_at, 110.0);
     }
 
