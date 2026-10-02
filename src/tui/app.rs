@@ -257,7 +257,14 @@ impl App {
             Field::Bold,
         ];
         if let Some(seg) = self.current() {
-            f.extend(seg.options.keys().map(|k| Field::Opt(k.clone())));
+            let colors = seg.color_options();
+            f.extend(
+                seg.options
+                    .keys()
+                    .filter(|k| !colors.contains(&k.as_str()))
+                    .map(|k| Field::Opt(k.clone())),
+            );
+            f.extend(colors.iter().map(|k| Field::Opt(k.to_string())));
         }
         f
     }
@@ -487,6 +494,14 @@ impl App {
                 Field::IconColor => seg.colors.icon = color,
                 Field::TextColor => seg.colors.text = color,
                 Field::BgColor => seg.colors.background = color,
+                Field::Opt(k) => match color.and_then(|c| toml::Value::try_from(c).ok()) {
+                    Some(v) => {
+                        seg.options.insert(k, v);
+                    }
+                    None => {
+                        seg.options.remove(&k);
+                    }
+                },
                 _ => {}
             }
         }
@@ -710,6 +725,10 @@ impl App {
             Field::BgColor => Popup::Color(
                 ColorPicker::new("Background Color", &seg.colors.background),
                 field,
+            ),
+            Field::Opt(k) if seg.color_options().contains(&k.as_str()) => Popup::Color(
+                ColorPicker::new(&format!("Option: {k}"), &seg.opt_color(k)),
+                field.clone(),
             ),
             Field::Opt(k) => match seg.options.get(k) {
                 Some(toml::Value::Boolean(_)) => return self.step_field(1),
@@ -1123,6 +1142,9 @@ impl App {
                 Field::TextColor => row("Text Color", swatch(&seg.colors.text)),
                 Field::BgColor => row("Background", swatch(&seg.colors.background)),
                 Field::Bold => row("Text Bold", on(seg.styles.text_bold)),
+                Field::Opt(k) if seg.color_options().contains(&k.as_str()) => {
+                    row(&format!("· {k}"), swatch(&seg.opt_color(&k)))
+                }
                 Field::Opt(k) => {
                     let value = match seg.options.get(&k) {
                         Some(toml::Value::Boolean(b)) => on(*b),
@@ -1324,7 +1346,7 @@ fn segment_help(id: SegmentId) -> &'static str {
         SegmentId::Model => "Model display name and current reasoning effort.",
         SegmentId::OutputStyle => "Current Claude Code output style.",
         SegmentId::Directory => "Working directory; depth: path segments kept.",
-        SegmentId::Git => "Branch, diff stats, ahead/behind; pr: open PR via gh.",
+        SegmentId::Git => "Branch, diff stats, ahead/behind; pr: open PR via gh; *_color: color for that part (none = text color).",
         SegmentId::Context => "Main conversation context window fill, colored by pressure. Subagents have separate context windows.",
         SegmentId::Usage => "Whole-session input ↑, output ↓ and cache hit rate; show_ttl adds the main conversation's prompt cache countdown when the transcript records its TTL.",
         SegmentId::Subagent => "Cumulative subagent usage grouped by model, including finished tasks. Shows the two largest models by input, plus a count of the rest; compact mode shows one.",

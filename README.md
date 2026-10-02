@@ -173,6 +173,8 @@ Segments appear in configuration order; omitted segments are appended disabled. 
 
 Colors accept palette names (`primary`, `accent`, `text_dim`, `success`, `warning`, `error`), `"#rrggbb"`, `{ c16 = 14 }`, `{ c256 = 208 }`, or `{ r = 1, g = 2, b = 3 }`. With `palette` unset, a `light*` Claude Code theme selects the light palette and anything else the dark one. Fixed RGB and 256 colors drawn on the terminal background are darkened or lightened just enough to reach 4.5:1 contrast against that palette, and bright 16-colors use their normal variant on light terminals; colors on a segment background are used as written. Custom palettes live in `palettes/<name>.json`, with a `base` (`dark` / `light`) and a `colors` object using camelCase names such as `textDim`.
 
+The git segment can color its parts separately with `branch_color`, `added_color` (`+12`) and `deleted_color` (`-3`), set in the configurator's color picker or as options such as `added_color = "success"`. Empty (the default) keeps the segment's text color; a set color applies on powerline backgrounds too.
+
 Built-in themes: `claude`, `cometix`, `default`, `minimal`, `gruvbox`, `nord`, `powerline-dark`, `powerline-light`, `powerline-rose-pine`, `powerline-tokyo-night`.
 
 Optional `~/.claude/cc-statusline/models.toml` maps exact incoming model display names or IDs to aliases:

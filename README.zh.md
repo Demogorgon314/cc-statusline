@@ -173,6 +173,8 @@ options = { stale_secs = 300, hide_when_stale = false }
 
 颜色支持配色名（`primary`、`accent`、`text_dim`、`success`、`warning`、`error` 等）、`"#rrggbb"`、`{ c16 = 14 }`、`{ c256 = 208 }` 或 `{ r = 1, g = 2, b = 3 }`。自定义配色放在 `palettes/<name>.json`，包含 `base`（`dark` / `light`）和 `colors` 对象，颜色键使用 `textDim` 等 camelCase 名称。`palette` 留空时，Claude Code 主题为 `light*` 则用浅色配色，否则用深色。直接画在终端背景上的固定 RGB / 256 色会按配色背景加深或提亮，刚好达到 4.5:1 对比度；浅色终端上亮色 16 色改用普通色；带段背景色的颜色保持原样。
 
+git 段可以用 `branch_color`、`added_color`（`+12`）和 `deleted_color`（`-3`）分别设置颜色，可以在配置器的颜色选择器里设置，也可以写成 `added_color = "success"` 这样的选项。留空（默认）时沿用段的文字颜色；设置后在 powerline 背景上同样生效。
+
 内置主题：`claude`、`cometix`、`default`、`minimal`、`gruvbox`、`nord`、`powerline-dark`、`powerline-light`、`powerline-rose-pine`、`powerline-tokyo-night`。
 
 可选的 `~/.claude/cc-statusline/models.toml` 按收到的完整模型显示名或 ID 设置别名：

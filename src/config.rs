@@ -166,6 +166,23 @@ impl SegmentConfig {
             .and_then(|v| v.as_integer())
             .unwrap_or(default)
     }
+
+    /// A color option such as `added_color`; unset or empty means none.
+    pub fn opt_color(&self, key: &str) -> Option<AnsiColor> {
+        self.options
+            .get(key)
+            .filter(|v| v.as_str() != Some(""))
+            .and_then(|v| v.clone().try_into().ok())
+    }
+
+    /// Color options this segment understands, offered by the configurator
+    /// even when the config does not set them.
+    pub fn color_options(&self) -> &'static [&'static str] {
+        match self.id {
+            SegmentId::Git => &["branch_color", "added_color", "deleted_color"],
+            _ => &[],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

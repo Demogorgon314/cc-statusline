@@ -44,6 +44,9 @@ struct Span {
     /// SGR faint: dims whatever color ends up applied, so it also works on
     /// powerline backgrounds where the segment's text color wins
     dim: bool,
+    /// a color the user configured: it wins over the segment's text color
+    /// even on a background
+    explicit: bool,
 }
 
 fn plain(text: impl Into<String>) -> Span {
@@ -52,6 +55,7 @@ fn plain(text: impl Into<String>) -> Span {
         color: None,
         bold: false,
         dim: false,
+        explicit: false,
     }
 }
 
@@ -61,6 +65,17 @@ fn colored(text: impl Into<String>, color: AnsiColor) -> Span {
         color: Some(color),
         bold: false,
         dim: false,
+        explicit: false,
+    }
+}
+
+/// A user color for part of a segment, from an option like `added_color`.
+fn opt_span(seg: &SegmentConfig, key: &str, text: impl Into<String>) -> Span {
+    let color = seg.opt_color(key);
+    Span {
+        explicit: color.is_some(),
+        color,
+        ..plain(text)
     }
 }
 
@@ -134,6 +149,7 @@ fn meter(ratio: f64, color: Option<AnsiColor>) -> Span {
         color,
         bold: false,
         dim: false,
+        explicit: false,
     }
 }
 
@@ -286,6 +302,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 color: stale.then(|| token("text_muted")),
                 bold: false,
                 dim: stale,
+                explicit: false,
             }])
         }
         SegmentId::Directory => {
@@ -303,23 +320,26 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
         }
         SegmentId::Git => {
             let branch = p.git_branch.as_deref().filter(|b| !b.is_empty())?;
-            let mut text = crate::payload::label(branch);
+            let mut spans = vec![opt_span(seg, "branch_color", crate::payload::label(branch))];
             if let Some(g) = ctx.git {
-                let mut parts = Vec::new();
+                let mut parts: Vec<Vec<Span>> = Vec::new();
                 if g.added > 0 || g.deleted > 0 {
                     let mut diff = Vec::new();
                     if g.added > 0 {
-                        diff.push(format!("+{}", g.added));
+                        diff.push(opt_span(seg, "added_color", format!("+{}", g.added)));
                     }
                     if g.deleted > 0 {
-                        diff.push(format!("-{}", g.deleted));
+                        if !diff.is_empty() {
+                            diff.push(plain(" "));
+                        }
+                        diff.push(opt_span(seg, "deleted_color", format!("-{}", g.deleted)));
                     }
-                    parts.push(diff.join(" "));
+                    parts.push(diff);
                 } else if g.dirty {
-                    parts.push("±".into());
+                    parts.push(vec![plain("±")]);
                 }
                 if g.conflicts {
-                    parts.push("⚠".into());
+                    parts.push(vec![plain("⚠")]);
                 }
                 let mut sync = String::new();
                 if g.ahead > 0 {
@@ -329,17 +349,23 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                     sync += &format!("↓{}", g.behind);
                 }
                 if !sync.is_empty() {
-                    parts.push(sync);
+                    parts.push(vec![plain(sync)]);
                 }
                 if !parts.is_empty() {
                     if compact {
-                        text += "*";
+                        spans.push(plain("*"));
                     } else {
-                        text += &format!(" [{}]", parts.join(" "));
+                        spans.push(plain(" ["));
+                        for (i, part) in parts.into_iter().enumerate() {
+                            if i > 0 {
+                                spans.push(plain(" "));
+                            }
+                            spans.extend(part);
+                        }
+                        spans.push(plain("]"));
                     }
                 }
             }
-            let mut spans = vec![plain(text)];
             if let Some(pr) = &ctx.pr {
                 let badge = format!("[PR#{}]", pr.number);
                 let badge = if ctx.color && seg.opt_bool("pr_link", true) {
@@ -376,6 +402,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 color,
                 bold: false,
                 dim: false,
+                explicit: false,
             });
             if !compact && seg.opt_bool("show_tokens", true) {
                 spans.push(colored(
@@ -484,6 +511,7 @@ fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec<Span> {
             color: pick(AnsiColor::Color16 { c16: 4 }),
             bold: false,
             dim: false,
+            explicit: false,
         },
         plain(if compact { " " } else { " · " }),
         Span {
@@ -495,6 +523,7 @@ fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec<Span> {
             color: pick(AnsiColor::Color16 { c16: 5 }),
             bold: false,
             dim: false,
+            explicit: false,
         },
     ];
     if seg.opt_bool("show_cache", true) {
@@ -505,6 +534,7 @@ fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec<Span> {
                 color: pick(rgb(cache_color(r))),
                 bold: false,
                 dim: false,
+                explicit: false,
             });
         }
     }
@@ -521,6 +551,7 @@ fn cache_ttl(seg: &SegmentConfig, left: f64, ttl: u32, compact: bool) -> Span {
             color: None,
             bold: false,
             dim: true,
+            explicit: false,
         };
     }
     let secs = left.ceil() as u64;
@@ -545,6 +576,7 @@ fn cache_ttl(seg: &SegmentConfig, left: f64, ttl: u32, compact: bool) -> Span {
             .then(|| rgb(cache_color(ramp))),
         bold: false,
         dim: false,
+        explicit: false,
     }
 }
 
@@ -590,6 +622,7 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
             color: colorful.then(|| token(tok)),
             bold: false,
             dim: false,
+            explicit: false,
         });
         if show_reset {
             if let Some(reset) = e
@@ -668,7 +701,7 @@ fn paint_segment(ctx: &Ctx, seg: &SegmentConfig, spans: Vec<Span>) -> String {
     for span in spans {
         // on a background, per-span accents (badges, ramps) would fight it:
         // the segment's own text color, chosen for that background, wins
-        let color = if bg.is_some() {
+        let color = if bg.is_some() && !span.explicit {
             seg.colors.text.as_ref().or(span.color.as_ref())
         } else {
             span.color.as_ref().or(seg.colors.text.as_ref())
@@ -1029,6 +1062,62 @@ mod tests {
             .options
             .insert("show_ttl".into(), false.into());
         assert!(!render(&ctx, None).contains('⏱'));
+    }
+
+    #[test]
+    fn git_parts_take_their_own_colors() {
+        let mut config = crate::themes::builtin("powerline-light").unwrap();
+        config.segments.retain(|s| s.id == SegmentId::Git);
+        let mut ctx = Ctx {
+            payload: Payload {
+                git_branch: Some("main".into()),
+                ..Default::default()
+            },
+            config,
+            palette: crate::appearance::LIGHT,
+            models: Models::default(),
+            stats: None,
+            tps: None,
+            effort: None,
+            session_created: None,
+            git: Some(GitStatus {
+                dirty: true,
+                conflicts: false,
+                ahead: 1,
+                behind: 0,
+                added: 12,
+                deleted: 3,
+            }),
+            pr: None,
+            quota: None,
+            now: 0.0,
+            color: true,
+        };
+        let strip = |s: &str| {
+            let mut out = String::new();
+            let mut i = 0;
+            while i < s.len() {
+                match ansi_len(&s[i..]) {
+                    Some(n) => i += n,
+                    None => {
+                        let c = s[i..].chars().next().unwrap();
+                        out.push(c);
+                        i += c.len_utf8();
+                    }
+                }
+            }
+            out
+        };
+        let before = render(&ctx, None);
+        assert!(strip(&before).contains("main [+12 -3 ↑1]"), "{before:?}");
+        let opts = &mut ctx.config.segments[0].options;
+        opts.insert("added_color".into(), "#00ff00".into());
+        opts.insert("deleted_color".into(), "error".into());
+        let after = render(&ctx, None);
+        assert_eq!(strip(&after), strip(&before));
+        // explicit colors win even on the powerline background
+        assert!(after.contains("\x1b[38;2;0;255;0m+12"), "{after:?}");
+        assert_ne!(after, before);
     }
 
     #[test]
