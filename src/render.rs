@@ -219,7 +219,15 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
     let p = &ctx.payload;
     match seg.id {
         SegmentId::Mode => (!p.mode.is_empty()).then(|| vec![plain(&p.mode)]),
-        SegmentId::Cost => p.cost_usd.map(|cost| vec![plain(format!("${cost:.2}"))]),
+        // the currency sign moves to the icon when there is one
+        SegmentId::Cost => p.cost_usd.map(|cost| {
+            let sign = if icon_of(ctx, seg).is_empty() {
+                "$"
+            } else {
+                ""
+            };
+            vec![plain(format!("{sign}{cost:.2}"))]
+        }),
         SegmentId::Model => {
             if p.model.is_empty() {
                 return None;
@@ -985,6 +993,37 @@ mod tests {
                 render(&ctx, None).ends_with(&format!("5h {shown}")),
                 "{used}"
             );
+        }
+    }
+
+    #[test]
+    fn cost_sign_moves_to_the_icon() {
+        for (theme, shown) in [
+            ("claude", "$1.23"),
+            ("minimal", "$ 1.23"),
+            ("cometix", "\u{f155} 1.23"),
+        ] {
+            let mut config = crate::themes::builtin(theme).unwrap();
+            config.segments.retain(|s| s.id == SegmentId::Cost);
+            let ctx = Ctx {
+                payload: Payload {
+                    cost_usd: Some(1.23),
+                    ..Payload::default()
+                },
+                config,
+                palette: crate::appearance::DARK,
+                models: Models::default(),
+                stats: None,
+                tps: None,
+                effort: None,
+                session_created: None,
+                git: None,
+                pr: None,
+                quota: None,
+                now: 0.0,
+                color: false,
+            };
+            assert_eq!(render(&ctx, None).trim(), shown, "{theme}");
         }
     }
 

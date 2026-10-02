@@ -323,7 +323,6 @@ impl Config {
         };
         let mut cfg: Config = toml::from_str(&text).map_err(|e| e.to_string())?;
         cfg.add_missing_segments();
-        cfg.migrate_icons();
         Ok(cfg)
     }
 
@@ -346,21 +345,6 @@ impl Config {
             if let Some(mut seg) = preset.segment(id).cloned() {
                 seg.enabled = false;
                 self.segments.push(seg);
-            }
-        }
-    }
-
-    /// Cost icons written by older versions were dollar signs, which
-    /// doubled up with the `$` in the value (`$ $0.00`).
-    pub fn migrate_icons(&mut self) {
-        for seg in &mut self.segments {
-            if seg.id == SegmentId::Cost {
-                if seg.icon.plain == "$" {
-                    seg.icon.plain.clear();
-                }
-                if seg.icon.nerd_font == "\u{f155}" {
-                    seg.icon.nerd_font = "\u{f0114}".into();
-                }
             }
         }
     }
