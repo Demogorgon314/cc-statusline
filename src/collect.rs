@@ -18,6 +18,7 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
     let wants = |id| config.segment(id).is_some_and(|s| s.enabled);
     let now = paths::now_secs();
     let stats = if wants(SegmentId::Usage)
+        || wants(SegmentId::Cache)
         || wants(SegmentId::Subagent)
         || wants(SegmentId::Session)
         || wants(SegmentId::Tps)

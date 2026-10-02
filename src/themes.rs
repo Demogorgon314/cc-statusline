@@ -42,6 +42,8 @@ fn icons(id: SegmentId, minimal: bool) -> (&'static str, &'static str) {
         (Context, true) => ("◑", "\u{f49b}"),
         (Usage, false) => ("📊", "\u{f0a9e}"),
         (Usage, true) => ("Σ", "\u{f0a9e}"),
+        (Cache, false) => ("💾", "\u{f1c0}"),
+        (Cache, true) => ("◎", "\u{f1c0}"),
         (Subagent, false) => ("🧩", "\u{f0bc5}"),
         (Subagent, true) => ("⊕", "\u{f0bc5}"),
         (Session, false) => ("⏱️", "\u{f19bb}"),
@@ -55,7 +57,7 @@ fn icons(id: SegmentId, minimal: bool) -> (&'static str, &'static str) {
     }
 }
 
-fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
+pub(crate) fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
     let mut o = BTreeMap::new();
     let mut put = |k: &str, v: toml::Value| {
         o.insert(k.to_string(), v);
@@ -70,11 +72,13 @@ fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
         SegmentId::Context => {
             put("show_tokens", true.into());
             put("bar", false.into());
+            put("bar_width", 8.into());
             put("colorful", true.into());
         }
-        SegmentId::Usage => {
+        SegmentId::Usage => put("colorful", true.into()),
+        SegmentId::Cache => {
             put("colorful", true.into());
-            put("show_cache", true.into());
+            put("show_rate", true.into());
             put("show_ttl", true.into());
         }
         SegmentId::Subagent => put("colorful", true.into()),
@@ -89,6 +93,7 @@ fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
             put("oauth_fallback", false.into());
             put("show_reset", true.into());
             put("bar", false.into());
+            put("bar_width", 8.into());
             put("colorful", true.into());
             put("refresh_secs", 120.into());
         }
@@ -187,7 +192,7 @@ fn fg_theme(
     separator: &str,
     bold: bool,
     minimal: bool,
-    colors: [(Option<AnsiColor>, Option<AnsiColor>); 13],
+    colors: [(Option<AnsiColor>, Option<AnsiColor>); 14],
 ) -> Config {
     let specs = SegmentId::ALL
         .into_iter()
@@ -207,7 +212,7 @@ type Triple = (u8, u8, u8);
 
 /// powerline preset: one (fg, bg) pair per segment. Backgrounds alternate
 /// between two shades along the default enabled order so each arrow shows.
-fn pl_theme(name: &str, colors: [(Triple, Triple); 13]) -> Config {
+fn pl_theme(name: &str, colors: [(Triple, Triple); 14]) -> Config {
     let specs = SegmentId::ALL
         .into_iter()
         .zip(colors)
@@ -257,7 +262,7 @@ fn claude() -> Config {
 }
 
 pub fn builtin(name: &str) -> Option<Config> {
-    // order: mode cost model output_style directory git context usage subagent session quota changes
+    // order: mode cost model output_style directory git context usage cache subagent session quota changes tps
     Some(match name {
         "claude" => claude(),
         "cometix" | "default" => {
@@ -281,6 +286,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(12),
                     pair(13),
                     pair(14),
+                    pair(10),
                     pair(6),
                     pair(2),
                     pair(3),
@@ -310,6 +316,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(12),
                     pair(13),
                     pair(14),
+                    pair(10),
                     pair(6),
                     pair(2),
                     pair(3),
@@ -335,6 +342,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(109),
                     pair(175),
                     pair(214),
+                    pair(142),
                     pair(108),
                     pair(142),
                     pair(214),
@@ -356,6 +364,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                     (129, 161, 193),
                     (192, 158, 186),
                     (235, 203, 139),
+                    (180, 142, 173),
                     (143, 188, 187),
                     (163, 190, 140),
                     (235, 203, 139),
@@ -383,11 +392,12 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((152, 195, 121), (62, 66, 76)),
                 ((209, 213, 219), (40, 42, 48)),
                 ((125, 190, 245), (62, 66, 76)),
-                ((198, 120, 221), (40, 42, 48)),
-                ((171, 178, 191), (62, 66, 76)),
-                ((229, 192, 123), (62, 66, 76)),
-                ((152, 195, 121), (40, 42, 48)),
                 ((86, 182, 194), (40, 42, 48)),
+                ((198, 120, 221), (62, 66, 76)),
+                ((171, 178, 191), (62, 66, 76)),
+                ((229, 192, 123), (40, 42, 48)),
+                ((152, 195, 121), (40, 42, 48)),
+                ((86, 182, 194), (62, 66, 76)),
             ],
         ),
         "powerline-light" => pl_theme(
@@ -401,6 +411,7 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((255, 255, 255), (3, 105, 161)),
                 ((255, 255, 255), (75, 85, 99)),
                 ((255, 255, 255), (21, 128, 61)),
+                ((255, 255, 255), (8, 145, 178)),
                 ((0, 0, 0), (250, 204, 21)),
                 ((255, 255, 255), (15, 118, 110)),
                 ((0, 0, 0), (251, 146, 60)),
@@ -419,11 +430,12 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((156, 207, 216), (64, 61, 82)),
                 ((224, 222, 244), (38, 35, 58)),
                 ((246, 193, 119), (64, 61, 82)),
-                ((235, 188, 186), (38, 35, 58)),
+                ((196, 167, 231), (38, 35, 58)),
+                ((235, 188, 186), (64, 61, 82)),
                 ((156, 207, 216), (64, 61, 82)),
-                ((246, 193, 119), (64, 61, 82)),
+                ((246, 193, 119), (38, 35, 58)),
                 ((156, 207, 216), (38, 35, 58)),
-                ((156, 207, 216), (38, 35, 58)),
+                ((156, 207, 216), (64, 61, 82)),
             ],
         ),
         "powerline-tokyo-night" => pl_theme(
@@ -437,11 +449,12 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((195, 232, 141), (65, 72, 104)),
                 ((192, 202, 245), (41, 46, 66)),
                 ((232, 190, 128), (65, 72, 104)),
-                ((187, 154, 247), (41, 46, 66)),
+                ((125, 207, 255), (41, 46, 66)),
+                ((187, 154, 247), (65, 72, 104)),
                 ((158, 206, 106), (65, 72, 104)),
-                ((232, 190, 128), (65, 72, 104)),
+                ((232, 190, 128), (41, 46, 66)),
                 ((125, 207, 255), (41, 46, 66)),
-                ((125, 207, 255), (41, 46, 66)),
+                ((125, 207, 255), (65, 72, 104)),
             ],
         ),
         _ => return None,
@@ -531,6 +544,38 @@ mod tests {
             .map(|s| s.id)
             .collect();
         assert_eq!(enabled_before, enabled_after);
+    }
+
+    #[test]
+    fn old_configs_gain_new_options_without_overriding() {
+        let mut cfg = builtin("claude").unwrap();
+        let seg = cfg
+            .segments
+            .iter_mut()
+            .find(|s| s.id == SegmentId::Context)
+            .unwrap();
+        seg.options.remove("bar");
+        seg.options.insert("colorful".into(), false.into());
+        cfg.add_missing_segments();
+        let seg = cfg.segment(SegmentId::Context).unwrap();
+        assert_eq!(seg.options.get("bar"), Some(&false.into()));
+        assert_eq!(seg.options.get("colorful"), Some(&false.into()));
+    }
+
+    #[test]
+    fn powerline_neighbors_differ_in_background() {
+        for (name, _) in BUILTIN {
+            let cfg = builtin(name).unwrap();
+            let bgs: Vec<_> = cfg
+                .segments
+                .iter()
+                .filter(|s| s.enabled)
+                .filter_map(|s| s.colors.background.clone().map(|bg| (s.id, bg)))
+                .collect();
+            for w in bgs.windows(2) {
+                assert_ne!(w[0].1, w[1].1, "{name}: {:?} / {:?}", w[0].0, w[1].0);
+            }
+        }
     }
 
     #[test]

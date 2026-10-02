@@ -109,15 +109,16 @@ With parallel subagents, the footer shows their combined output rate and how man
 | `output_style` | Output style (disabled by default) |
 | `directory` | Working directory |
 | `git` | Branch, diff, conflicts, ahead/behind, open PR (fallback lookup needs `gh`) |
-| `context` | Main conversation context percentage and input tokens / capacity (`ctx 62% · 620k/1M`); `bar = true` adds a meter |
-| `usage` | Whole-session input ↑ / output ↓ / cache hit rate, including subagents; `⏱ 52:10` counts down the main conversation's prompt cache, shown only when the transcript records its TTL (`show_ttl`) |
+| `context` | Main conversation context percentage and input tokens / capacity (`ctx 62% · 620k/1M`); `bar = true` adds a meter (`ctx █████─── 62%`), `bar_width` sets its cells (default 8) |
+| `usage` | Whole-session input ↑ / output ↓ tokens, including subagents (`↑611k ↓6.5k`) |
+| `cache` | Whole-session prompt cache hit rate (`show_rate`) and the main conversation's cache countdown `⏱ 52:10` (`show_ttl`), shown only when the transcript records its TTL |
 | `subagent` | Cumulative subagent usage: top two models by input, plus `+N models`; compact lines show the subagent total |
 | `session` | Accumulated session duration (disabled by default) |
 | `quota` | Five-hour / seven-day quota, optional gateway spend limit, reset times |
 | `changes` | Session lines added/removed (disabled by default) |
 | `tps` | Recent output per second of generation: `≈42 tok/s`, with `×3` when three logs produced output in the last 30 seconds (compact: `≈42 t/s ×3`) |
 
-When space runs out, segments drop in this order: session → changes → git → directory → subagent → tps → output_style → cost → context → quota → mode.
+When space runs out, segments drop in this order: session → changes → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode.
 
 `ctx` counts the main conversation's input plus cache reads and writes, excluding output; Claude's native percentage takes precedence. Subagents have independent contexts and are not added to this percentage. Session totals come from the exact supplied transcript and its adjacent subagent logs, deduplicated by message ID. The `sub` segment includes finished tasks and groups them by model, not by agent; compact mode shows the largest model and a count of the rest. Incomplete totals are marked `≈` and dimmed. Missing sessions never inherit another session's statistics. Quota belongs to the account and can persist across sessions.
 
@@ -162,7 +163,7 @@ wrap = false           # true: continue on more lines instead of compacting
 id = "quota"
 enabled = true
 colors = { text = "text_dim" }
-options = { show_5h = true, show_7d = true, show_spend = true, show_reset = true, bar = false, oauth_fallback = false, refresh_secs = 120 }
+options = { show_5h = true, show_7d = true, show_spend = true, show_reset = true, bar = false, bar_width = 8, oauth_fallback = false, refresh_secs = 120 }
 
 [[segments]]
 id = "tps"

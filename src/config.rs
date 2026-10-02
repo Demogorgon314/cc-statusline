@@ -87,8 +87,10 @@ pub enum SegmentId {
     Git,
     /// main conversation context window fill
     Context,
-    /// whole-session input / output / cache hit rate
+    /// whole-session input / output tokens
     Usage,
+    /// prompt cache: session hit rate and the main conversation's countdown
+    Cache,
     /// cumulative subagent usage, grouped by model
     Subagent,
     /// session wall-clock age
@@ -102,7 +104,7 @@ pub enum SegmentId {
 }
 
 impl SegmentId {
-    pub const ALL: [SegmentId; 13] = [
+    pub const ALL: [SegmentId; 14] = [
         SegmentId::Mode,
         SegmentId::Cost,
         SegmentId::Model,
@@ -111,6 +113,7 @@ impl SegmentId {
         SegmentId::Git,
         SegmentId::Context,
         SegmentId::Usage,
+        SegmentId::Cache,
         SegmentId::Subagent,
         SegmentId::Session,
         SegmentId::Quota,
@@ -128,6 +131,7 @@ impl SegmentId {
             SegmentId::Git => "Git",
             SegmentId::Context => "Context",
             SegmentId::Usage => "Usage",
+            SegmentId::Cache => "Cache",
             SegmentId::Subagent => "Subagent",
             SegmentId::Session => "Session",
             SegmentId::Quota => "Quota",
@@ -350,8 +354,15 @@ impl Config {
     /// Segments added in a newer version than the one that wrote this
     /// config: append them, disabled, styled like the same theme's built-in
     /// preset, so they show up in the configurator without changing what
-    /// the status line already renders.
+    /// the status line already renders. Options added since are filled in
+    /// with their defaults (the same values render falls back to) so the
+    /// configurator lists them too.
     pub fn add_missing_segments(&mut self) {
+        for seg in &mut self.segments {
+            for (k, v) in crate::themes::default_options(seg.id) {
+                seg.options.entry(k).or_insert(v);
+            }
+        }
         let missing: Vec<SegmentId> = SegmentId::ALL
             .into_iter()
             .filter(|id| self.segment(*id).is_none())

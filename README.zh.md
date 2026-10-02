@@ -109,15 +109,16 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 | `output_style` | 输出风格（默认关闭） |
 | `directory` | 工作目录 |
 | `git` | 分支、改动统计、冲突、ahead/behind、打开的 PR（回退查询需要 `gh`） |
-| `context` | 主会话上下文占用百分比和输入 token / 容量（`ctx 62% · 620k/1M`）；`bar = true` 显示进度条 |
-| `usage` | 整个会话的输入 ↑ / 输出 ↓ / 缓存命中率，包含子 agent；`⏱ 52:10` 为主对话 prompt cache 过期倒计时，仅在 transcript 记录了 TTL 时显示（`show_ttl`） |
+| `context` | 主会话上下文占用百分比和输入 token / 容量（`ctx 62% · 620k/1M`）；`bar = true` 显示进度条（`ctx █████─── 62%`），`bar_width` 设置格数（默认 8） |
+| `usage` | 整个会话的输入 ↑ / 输出 ↓ token，包含子 agent（`↑611k ↓6.5k`） |
+| `cache` | 整个会话的 prompt cache 命中率（`show_rate`）和主对话缓存过期倒计时 `⏱ 52:10`（`show_ttl`），倒计时仅在 transcript 记录了 TTL 时显示 |
 | `subagent` | 子任务累计用量：输入最多的两个模型，其余显示 `+N 个模型`；紧凑模式显示子任务合计 |
 | `session` | 累计会话时长（默认关闭） |
 | `quota` | 5h / 7d 额度、可选的网关消费上限和重置时间 |
 | `changes` | 会话新增 / 删除行数（默认关闭） |
 | `tps` | 近期每秒生成的输出：`≈42 tok/s`；最近 30 秒有三个日志在输出时附加 `×3`（紧凑模式为 `≈42 t/s ×3`） |
 
-空间不够时按这个顺序去掉：session → changes → git → directory → subagent → tps → output_style → cost → context → quota → mode。
+空间不够时按这个顺序去掉：session → changes → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode。
 
 `ctx` 统计主会话的输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。各子任务拥有独立上下文，不累加到这个百分比。`sub` 段按模型汇总累计用量，包含已完成任务；紧凑模式只显示输入最多的一个模型和其余模型数量。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重；不完整的用量以 `≈` 标记并变暗。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
 
@@ -162,7 +163,7 @@ wrap = false           # true：宽度不够时换到下一行，而不是压缩
 id = "quota"
 enabled = true
 colors = { text = "text_dim" }
-options = { show_5h = true, show_7d = true, show_spend = true, show_reset = true, bar = false, oauth_fallback = false, refresh_secs = 120 }
+options = { show_5h = true, show_7d = true, show_spend = true, show_reset = true, bar = false, bar_width = 8, oauth_fallback = false, refresh_secs = 120 }
 
 [[segments]]
 id = "tps"

@@ -128,6 +128,18 @@ pub fn fmt_tokens(n: u64) -> String {
     format!("{:.2}M", n as f64 / 1e6)
 }
 
+/// Running totals at about three significant digits: `999`, `6.5k`, `611k`,
+/// `1.2M`. The tenths of a big total stop mattering, the width doesn't.
+fn fmt_tokens_brief(n: u64) -> String {
+    let tenths = |v: f64| format!("{v:.1}").trim_end_matches(".0").to_string();
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=99_949 => tenths(n as f64 / 1e3) + "k",
+        99_950..=999_499 => format!("{:.0}k", n as f64 / 1e3),
+        _ => tenths(n as f64 / 1e6) + "M",
+    }
+}
+
 /// fmt_tokens without trailing zeros, for round capacities: `620k/1M`.
 fn fmt_tokens_short(n: u64) -> String {
     let s = fmt_tokens(n);
@@ -141,16 +153,40 @@ fn fmt_tokens_short(n: u64) -> String {
     )
 }
 
-/// An 8-cell share bar with a trailing space.
-fn meter(ratio: f64, color: Option<AnsiColor>) -> Span {
-    let filled = (ratio.clamp(0.0, 1.0) * 8.0).round() as usize;
-    Span {
-        text: format!("{}{} ", "█".repeat(filled), "░".repeat(8 - filled)),
-        color,
-        bold: false,
-        dim: false,
-        explicit: false,
+/// A share bar `width` cells wide, in eighths of a cell so small shares
+/// still show (any use draws at least `▏`), with a trailing space. The empty
+/// track is a dimmed thin line: `░` would merge with a powerline background.
+fn meter(ratio: f64, width: usize, color: Option<AnsiColor>) -> Vec<Span> {
+    const PARTIAL: [&str; 8] = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+    let width = width.max(1);
+    let ratio = ratio.clamp(0.0, 1.0);
+    let mut eighths = (ratio * (width * 8) as f64).round() as usize;
+    if ratio > 0.0 {
+        eighths = eighths.max(1);
     }
+    let (full, part) = (eighths / 8, eighths % 8);
+    let used = full + usize::from(part > 0);
+    vec![
+        Span {
+            text: format!("{}{}", "█".repeat(full), PARTIAL[part]),
+            color,
+            bold: false,
+            dim: false,
+            explicit: false,
+        },
+        Span {
+            text: "─".repeat(width - used),
+            color: None,
+            bold: false,
+            dim: true,
+            explicit: false,
+        },
+        plain(" "),
+    ]
+}
+
+fn bar_width(seg: &SegmentConfig) -> usize {
+    seg.opt_int("bar_width", 8).clamp(1, 40) as usize
 }
 
 /// Modern providers sit at 95%+ almost always, so up there one decimal is
@@ -395,7 +431,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             let color = seg.opt_bool("colorful", true).then(|| token(tok));
             let mut spans = vec![plain("ctx ")];
             if seg.opt_bool("bar", false) && !compact {
-                spans.push(meter(ratio, color.clone()));
+                spans.extend(meter(ratio, bar_width(seg), color.clone()));
             }
             spans.push(Span {
                 text: format!("{pct}%"),
@@ -421,21 +457,46 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             if st.total.is_empty() {
                 return None;
             }
-            let mut spans = Vec::new();
-            if !compact {
-                spans.push(plain("total "));
-            }
-            spans.extend(usage_triple(seg, &st.total, compact));
+            let mut spans = usage_triple(seg, &st.total, compact, false);
             if st.state != crate::session::CollectionState::Complete {
-                spans.insert(0, plain("≈"));
-                for span in &mut spans {
-                    span.dim = true;
+                mark_incomplete(&mut spans);
+            }
+            Some(spans)
+        }
+        SegmentId::Cache => {
+            let st = ctx.stats.as_ref()?;
+            let mut spans = Vec::new();
+            if seg.opt_bool("show_rate", true) {
+                if let Some(r) = st.total.cache_rate() {
+                    spans.push(Span {
+                        text: fmt_rate(r),
+                        color: seg.opt_bool("colorful", true).then(|| rgb(cache_color(r))),
+                        bold: false,
+                        dim: false,
+                        explicit: false,
+                    });
+                    if st.state != crate::session::CollectionState::Complete {
+                        mark_incomplete(&mut spans);
+                    }
                 }
             }
             if seg.opt_bool("show_ttl", true) {
                 if let Some((expiry, ttl)) = st.cache_expiry {
+                    let sep = match (spans.is_empty(), compact) {
+                        (true, _) => "",
+                        (false, true) => " ",
+                        (false, false) => " · ",
+                    };
+                    spans.push(plain(sep));
                     spans.push(cache_ttl(seg, expiry - ctx.now, ttl, compact));
                 }
+            }
+            if spans.is_empty() {
+                return None;
+            }
+            // like cost's `$`: without an icon the numbers need a label
+            if icon_of(ctx, seg).is_empty() && !compact {
+                spans.insert(0, plain("cache "));
             }
             Some(spans)
         }
@@ -450,6 +511,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 return None;
             }
             models.sort_by(|(a, ua), (b, ub)| ub.input().cmp(&ua.input()).then_with(|| a.cmp(b)));
+            let show_cache = seg.opt_bool("show_cache", true);
             let mut spans = vec![plain("sub ")];
             if compact {
                 // Narrow lines keep the subagent total rather than one model.
@@ -457,7 +519,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 for (_, u) in &models {
                     total.add(u);
                 }
-                spans.extend(usage_triple(seg, &total, compact));
+                spans.extend(usage_triple(seg, &total, compact, show_cache));
             } else {
                 const LIMIT: usize = 2;
                 for (i, (model, u)) in models.iter().take(LIMIT).enumerate() {
@@ -465,7 +527,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                         spans.push(plain("; "));
                     }
                     spans.push(plain(format!("{} ", ctx.models.display(model))));
-                    spans.extend(usage_triple(seg, u, compact));
+                    spans.extend(usage_triple(seg, u, compact, show_cache));
                 }
                 let more = models.len().saturating_sub(LIMIT);
                 if more > 0 {
@@ -498,37 +560,37 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
     }
 }
 
-fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec<Span> {
+/// `≈` in front and everything dimmed: the totals are still being read.
+fn mark_incomplete(spans: &mut Vec<Span>) {
+    spans.insert(0, plain("≈"));
+    for span in spans {
+        span.dim = true;
+    }
+}
+
+fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool, cache: bool) -> Vec<Span> {
     let colorful = seg.opt_bool("colorful", true);
     let pick = |c: AnsiColor| colorful.then_some(c);
     let mut spans = vec![
         Span {
-            text: format!(
-                "↑{}{}",
-                if compact { "" } else { " " },
-                fmt_tokens(u.input())
-            ),
+            text: format!("↑{}", fmt_tokens_brief(u.input())),
             color: pick(AnsiColor::Color16 { c16: 4 }),
             bold: false,
             dim: false,
             explicit: false,
         },
-        plain(if compact { " " } else { " · " }),
+        plain(" "),
         Span {
-            text: format!(
-                "↓{}{}",
-                if compact { "" } else { " " },
-                fmt_tokens(u.output)
-            ),
+            text: format!("↓{}", fmt_tokens_brief(u.output)),
             color: pick(AnsiColor::Color16 { c16: 5 }),
             bold: false,
             dim: false,
             explicit: false,
         },
     ];
-    if seg.opt_bool("show_cache", true) {
+    if cache {
         if let Some(r) = u.cache_rate() {
-            let label = if compact { " " } else { " cache " };
+            let label = if compact { " " } else { " · cache " };
             spans.push(Span {
                 text: format!("{label}{}", fmt_rate(r)),
                 color: pick(rgb(cache_color(r))),
@@ -544,10 +606,9 @@ fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec<Span> {
 /// `⏱ 52:10`: time left on the main conversation's prompt cache, from green
 /// to red as the TTL runs out; dimmed once expired.
 fn cache_ttl(seg: &SegmentConfig, left: f64, ttl: u32, compact: bool) -> Span {
-    let sep = if compact { " " } else { " · " };
     if left <= 0.0 {
         return Span {
-            text: format!("{sep}⏱ expired"),
+            text: "⏱ expired".into(),
             color: None,
             bold: false,
             dim: true,
@@ -556,9 +617,9 @@ fn cache_ttl(seg: &SegmentConfig, left: f64, ttl: u32, compact: bool) -> Span {
     }
     let secs = left.ceil() as u64;
     let text = if compact {
-        format!("{sep}⏱{}", fmt_duration(secs))
+        format!("⏱{}", fmt_duration(secs))
     } else {
-        format!("{sep}⏱ {}:{:02}", secs / 60, secs % 60)
+        format!("⏱ {}:{:02}", secs / 60, secs % 60)
     };
     // Reuse the hit-rate ramp's red, amber and green stops.
     let share = left / ttl as f64;
@@ -594,6 +655,7 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
     // reset times survive compaction: they are what the segment is for
     let show_reset = seg.opt_bool("show_reset", true);
     let bar = seg.opt_bool("bar", false) && !compact;
+    let width = bar_width(seg);
     let mut spans = Vec::new();
     for (label, entry, wanted) in windows {
         let Some(e) = entry.filter(|_| wanted) else {
@@ -615,7 +677,7 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
         };
         spans.push(plain(format!("{label} ")));
         if bar {
-            spans.push(meter(ratio, colorful.then(|| token(tok))));
+            spans.extend(meter(ratio, width, colorful.then(|| token(tok))));
         }
         spans.push(Span {
             text: format!("{pct}%"),
@@ -854,16 +916,20 @@ pub fn render(ctx: &Ctx, width: Option<usize>) -> String {
         return wrap(ctx, width);
     }
     use SegmentId::*;
-    const DROP_ORDER: [SegmentId; 11] = [
+    const DROP_ORDER: [SegmentId; 13] = [
         Session,
         Changes,
         Git,
         Directory,
         Subagent,
+        // session totals; cost already sums them up
+        Usage,
         // the compact rate is short and the only live signal of parallel work
         Tps,
         OutputStyle,
         Cost,
+        // the countdown is short and decides whether to reply soon
+        Cache,
         Context,
         Quota,
         Mode,
@@ -1060,9 +1126,11 @@ mod tests {
     }
 
     #[test]
-    fn usage_shows_cache_countdown_only_when_known() {
+    fn cache_splits_from_usage_and_counts_down_only_when_known() {
         let mut config = crate::themes::builtin("claude").unwrap();
-        config.segments.retain(|s| s.id == SegmentId::Usage);
+        config
+            .segments
+            .retain(|s| matches!(s.id, SegmentId::Usage | SegmentId::Cache));
         let mut ctx = Ctx {
             payload: Payload::default(),
             config,
@@ -1086,16 +1154,21 @@ mod tests {
             now: 1000.0,
             color: false,
         };
-        assert!(!render(&ctx, None).contains('⏱'));
+        assert_eq!(render(&ctx, None), "│ ↑100 ↓10  cache 90%");
         ctx.stats.as_mut().unwrap().cache_expiry = Some((4130.0, 3600));
-        assert!(render(&ctx, None).contains("⏱ 52:10"));
-        assert!(render(&ctx, Some(24)).contains("⏱52m"));
+        assert!(render(&ctx, None).ends_with("cache 90% · ⏱ 52:10"));
+        assert!(render(&ctx, Some(24)).ends_with(" 90% ⏱52m"));
         ctx.now = 5000.0;
         assert!(render(&ctx, None).contains("⏱ expired"));
-        ctx.config.segments[0]
-            .options
-            .insert("show_ttl".into(), false.into());
-        assert!(!render(&ctx, None).contains('⏱'));
+        let cache = |ctx: &mut Ctx, k: &str| {
+            ctx.config.segments[1]
+                .options
+                .insert(k.into(), false.into());
+        };
+        cache(&mut ctx, "show_rate");
+        assert!(render(&ctx, None).ends_with("  cache ⏱ expired"));
+        cache(&mut ctx, "show_ttl");
+        assert_eq!(render(&ctx, None), "│ ↑100 ↓10");
     }
 
     #[test]
@@ -1198,6 +1271,26 @@ mod tests {
         assert_eq!(fmt_tokens(1_234_567), "1.23M");
         assert_eq!(fmt_tokens(999_949), "999.9k");
         assert_eq!(fmt_tokens(999_950), "1.00M");
+        let bar = |r, w| {
+            meter(r, w, None)
+                .into_iter()
+                .map(|s| s.text)
+                .collect::<String>()
+        };
+        assert_eq!(bar(0.0, 8), "──────── ");
+        assert_eq!(bar(0.03, 8), "▎─────── ");
+        assert_eq!(bar(0.001, 8), "▏─────── ");
+        assert_eq!(bar(0.62, 8), "█████─── ");
+        assert_eq!(bar(1.0, 4), "████ ");
+        assert_eq!(fmt_tokens_brief(999), "999");
+        assert_eq!(fmt_tokens_brief(6_500), "6.5k");
+        assert_eq!(fmt_tokens_brief(12_000), "12k");
+        assert_eq!(fmt_tokens_brief(99_949), "99.9k");
+        assert_eq!(fmt_tokens_brief(99_950), "100k");
+        assert_eq!(fmt_tokens_brief(611_300), "611k");
+        assert_eq!(fmt_tokens_brief(999_499), "999k");
+        assert_eq!(fmt_tokens_brief(999_500), "1M");
+        assert_eq!(fmt_tokens_brief(12_345_678), "12.3M");
         assert_eq!(fmt_tokens_short(1_000_000), "1M");
         assert_eq!(fmt_tokens_short(620_000), "620k");
         assert_eq!(fmt_tokens_short(1_500_000), "1.5M");

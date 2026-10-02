@@ -68,7 +68,7 @@ fn message(session: &str, id: &str, output: u64) -> String {
 
 #[test]
 fn session_isolation_resume_and_preview() {
-    let f = Fixture::new(&["usage", "subagent"]);
+    let f = Fixture::new(&["usage", "cache", "subagent"]);
     let path = f.transcript("old");
     std::fs::write(&path, message("old", "m1", 420)).unwrap();
     let p = json!({"session_id":"old","transcript_path":path,"cwd":"/work/demo"});
@@ -94,7 +94,7 @@ fn partial_records_duplicate_messages_and_truncation() {
     let path = f.transcript("one");
     let p = json!({"session_id":"one","transcript_path":path});
     std::fs::write(&path, message("one", "m1", 10)).unwrap();
-    assert!(f.text(&[], &p).contains("↓ 10"));
+    assert!(f.text(&[], &p).contains("↓10"));
     let line = message("one", "m1", 20);
     let cut = line.len() / 2;
     let mut file = std::fs::OpenOptions::new()
@@ -102,17 +102,17 @@ fn partial_records_duplicate_messages_and_truncation() {
         .open(&path)
         .unwrap();
     file.write_all(&line.as_bytes()[..cut]).unwrap();
-    assert!(f.text(&[], &p).contains("↓ 10"));
+    assert!(f.text(&[], &p).contains("↓10"));
     file.write_all(&line.as_bytes()[cut..]).unwrap();
     let updated = f.text(&[], &p);
     assert!(
-        updated.contains("↓ 20") && updated.contains("↑ 1.0k"),
+        updated.contains("↓20") && updated.contains("↑1k"),
         "{updated}"
     );
     drop(file);
     std::fs::write(&path, message("one", "m2", 7)).unwrap();
     let reset = f.text(&[], &p);
-    assert!(reset.contains("↓ 7") && !reset.contains("↓ 20"), "{reset}");
+    assert!(reset.contains("↓7") && !reset.contains("↓20"), "{reset}");
 }
 #[test]
 fn subagents_are_scoped_to_parent_transcript() {
@@ -133,7 +133,7 @@ fn subagents_are_scoped_to_parent_transcript() {
     .unwrap();
     let text = f.text(&[], &json!({"session_id":"one","transcript_path":path}));
     assert!(
-        text.contains("↓ 300") && text.contains("Sonnet ↑ 1.0k") && !text.contains("999"),
+        text.contains("↓300") && text.contains("Sonnet ↑1k") && !text.contains("999"),
         "{text}"
     );
 }
