@@ -192,6 +192,8 @@ The fallback uses Claude's existing OAuth credentials from macOS Keychain or `.c
 
 PR lookup also runs in the background when Claude has not supplied a PR. Set the git segment's `pr = false` to disable lookup. Caches live in `~/.claude/cc-statusline-cache/`.
 
+The `[PR#42]` badge is an OSC 8 hyperlink (`pr_link = false` turns it off). Claude Code strips hyperlinks from the status line unless it recognizes the terminal (for example Ghostty, iTerm2, kitty, WezTerm, VS Code). If the badge is not clickable in another terminal that supports OSC 8, such as Otty, set `export FORCE_HYPERLINK=1` in your shell profile and restart Claude Code.
+
 </details>
 
 <details>

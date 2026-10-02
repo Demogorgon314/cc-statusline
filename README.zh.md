@@ -192,6 +192,8 @@ options = { stale_secs = 300, hide_when_stale = false }
 
 Claude 没有提供 PR 时，也会在后台查询 PR。将 git 段的 `pr = false` 即可关闭查询。缓存位于 `~/.claude/cc-statusline-cache/`。
 
+`[PR#42]` 是 OSC 8 超链接（`pr_link = false` 可关闭）。Claude Code 只在识别出的终端（如 Ghostty、iTerm2、kitty、WezTerm、VS Code）中保留状态栏里的超链接。如果在其他支持 OSC 8 的终端（如 Otty）里无法点击，请在 shell 配置中加入 `export FORCE_HYPERLINK=1` 并重启 Claude Code。
+
 </details>
 
 <details>
