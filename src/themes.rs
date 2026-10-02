@@ -174,6 +174,7 @@ fn build(
             separator_color: None,
             palette: String::new(),
             width: 0,
+            wrap: false,
         },
         segments,
     }

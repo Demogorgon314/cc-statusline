@@ -283,6 +283,7 @@ impl App {
         // themes never set these; they belong to this install, not the look
         cfg.style.separator_color = self.config.style.separator_color.clone();
         cfg.style.width = self.config.style.width;
+        cfg.style.wrap = self.config.style.wrap;
         self.config = cfg;
         self.seg = self.seg.min(self.config.segments.len().saturating_sub(1));
         self.field = 0;
@@ -617,6 +618,17 @@ impl App {
                 }
                 self.status = Some(format!("Style mode: {}", self.config.style.mode.name()));
             }
+            KeyCode::Char('l') | KeyCode::Char('L') => {
+                self.config.style.wrap = !self.config.style.wrap;
+                self.status = Some(format!(
+                    "Narrow width: {}",
+                    if self.config.style.wrap {
+                        "wrap"
+                    } else {
+                        "compact"
+                    }
+                ));
+            }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.config.style.palette = match self.config.style.palette.as_str() {
                     "" => "dark",
@@ -838,7 +850,7 @@ impl App {
 
         let [title, preview_area, theme_area, body, help_area] = Layout::vertical([
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(preview.lines().count().max(1) as u16 + 2),
             Constraint::Length(theme_lines.len() as u16 + 2),
             Constraint::Min(10),
             Constraint::Length(help_lines + 2),
@@ -881,6 +893,17 @@ impl App {
                     }
                 ),
                 'c',
+            ),
+            (
+                format!(
+                    "narrow: {}",
+                    if self.config.style.wrap {
+                        "wrap"
+                    } else {
+                        "compact"
+                    }
+                ),
+                'l',
             ),
         ];
         let style_info = format!(
@@ -992,7 +1015,7 @@ impl App {
                 ))
             }
             Some(Popup::Help) => {
-                let r = centered(area, 66, 24);
+                let r = centered(area, 66, 25);
                 f.render_widget(Clear, r);
                 f.render_widget(
                     Paragraph::new(HELP)
@@ -1324,6 +1347,7 @@ fn help_buttons(panel: Panel) -> Vec<Button> {
         button("M", "Style Mode", k('m')),
         button("E", "Separator", k('e')),
         button("C", "Colors", k('c')),
+        button("L", "Wrap", k('l')),
         button("R", "Reset", k('r')),
         button("S", "Save", k('s')),
         button("W", "Write Theme", k('w')),
@@ -1375,13 +1399,14 @@ const HELP: &str = "\
    click [✓]        show / hide a segment directly
    drag a segment   move it to a new position (live preview)
    wheel            scroll the list under the pointer
-   bottom bar, mode/sep/colors in the preview border are buttons
+   bottom bar, mode/sep/colors/narrow in the preview border are buttons
 
  Anywhere
    1-9 / P          pick / cycle theme      R  reset theme
    M                plain → nerd_font → powerline
    E                separator
    C                colors: default → dark → light
+   L                narrow width: compact → wrap onto more lines
    S                save config.toml        W  write current theme
    Ctrl+S           save as a new theme     Esc quit
    Ctrl+C twice     exit cc-statusline right away

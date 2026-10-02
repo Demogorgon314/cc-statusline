@@ -88,7 +88,7 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 
 - **增量读取**会话日志：从缓存游标继续，每个文件最多读取 4 MiB，每次刷新解析预算为 100 ms；历史记录分多次刷新追上
 - 可选的 OAuth 额度刷新、`gh pr view` 都在**后台**做；Claude 原生额度无需额外请求
-- 终端变窄时**自动精简**，压缩显示并逐步去掉优先级较低的段
+- 终端变窄时**自动精简**，压缩显示并逐步去掉优先级较低的段；设置 `wrap = true` 则改为换到第二行显示（配置器中按 `L` 切换）
 
 ![四种终端宽度下的自适应效果](assets/adaptive.png)
 
@@ -156,6 +156,7 @@ mode = "plain"          # plain | nerd_font | powerline
 separator = "  "        # "" 为 powerline 箭头
 palette = ""             # auto（跟随 Claude Code 主题）| dark | light | 自定义配色名
 width = 0              # 自动检测；--width 优先
+wrap = false           # true：宽度不够时换到下一行，而不是压缩隐藏
 
 [[segments]]
 id = "quota"

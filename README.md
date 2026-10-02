@@ -88,7 +88,7 @@ cc-statusline is a single Rust binary. Work stays bounded as your session grows:
 
 - **Incremental transcript reads** resume from cached cursors, with a 4 MiB per-file read limit and a 100 ms parsing budget per refresh; older history catches up over successive refreshes
 - Optional OAuth quota refreshes and `gh pr view` run **in the background**; native quota needs no extra request
-- **Adaptive width** compacts the line and removes lower-priority segments as the terminal narrows
+- **Adaptive width** compacts the line and removes lower-priority segments as the terminal narrows, or with `wrap = true` continues on a second line (toggle with `L` in the configurator)
 
 ![Adaptive status line at four terminal widths](assets/adaptive.png)
 
@@ -156,6 +156,7 @@ mode = "plain"          # plain | nerd_font | powerline
 separator = "  "        # "" for powerline arrows
 palette = ""            # auto (follows Claude Code's theme) | dark | light | custom palette name
 width = 0              # auto-detect; --width overrides this
+wrap = false           # true: continue on more lines instead of compacting
 
 [[segments]]
 id = "quota"

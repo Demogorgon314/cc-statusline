@@ -790,9 +790,8 @@ fn arrow(ctx: &Ctx, prev: Option<&AnsiColor>, next: Option<&AnsiColor>) -> Strin
     out
 }
 
-fn compose(ctx: &Ctx, compact: bool, dropped: &[SegmentId]) -> String {
-    let parts: Vec<Rendered> = ctx
-        .config
+fn parts<'a>(ctx: &'a Ctx, compact: bool, dropped: &[SegmentId]) -> Vec<Rendered<'a>> {
+    ctx.config
         .segments
         .iter()
         .filter(|s| s.enabled && !dropped.contains(&s.id))
@@ -803,13 +802,45 @@ fn compose(ctx: &Ctx, compact: bool, dropped: &[SegmentId]) -> String {
                 text: paint_segment(ctx, seg, spans),
             })
         })
-        .collect();
-    join(ctx, &parts)
+        .collect()
+}
+
+fn compose(ctx: &Ctx, compact: bool, dropped: &[SegmentId]) -> String {
+    join(ctx, &parts(ctx, compact, dropped))
+}
+
+/// Pack full-size segments into as many lines as they need, in configuration
+/// order. A segment wider than a whole line gets a line of its own, cut.
+fn wrap(ctx: &Ctx, width: usize) -> String {
+    let parts = parts(ctx, false, &[]);
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for end in 1..=parts.len() {
+        if end - start > 1 && visible_width(&join(ctx, &parts[start..end])) > width {
+            lines.push(join(ctx, &parts[start..end - 1]));
+            start = end - 1;
+        }
+    }
+    if start < parts.len() {
+        lines.push(join(ctx, &parts[start..]));
+    }
+    lines
+        .iter()
+        .map(|l| {
+            if visible_width(l) > width {
+                truncate(l, width, ctx.color)
+            } else {
+                l.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Render, then degrade until the line fits `width`: compact labels first,
 /// then drop segments from least to most useful, and only as a last resort
-/// cut with an ellipsis. `None` width returns the full line.
+/// cut with an ellipsis. With `style.wrap` the segments flow onto more lines
+/// instead. `None` width returns the full line.
 pub fn render(ctx: &Ctx, width: Option<usize>) -> String {
     if width == Some(0) {
         return String::new();
@@ -818,6 +849,9 @@ pub fn render(ctx: &Ctx, width: Option<usize>) -> String {
     let Some(width) = width else { return full };
     if visible_width(&full) <= width {
         return full;
+    }
+    if ctx.config.style.wrap {
+        return wrap(ctx, width);
     }
     use SegmentId::*;
     const DROP_ORDER: [SegmentId; 11] = [
@@ -1062,6 +1096,43 @@ mod tests {
             .options
             .insert("show_ttl".into(), false.into());
         assert!(!render(&ctx, None).contains('⏱'));
+    }
+
+    #[test]
+    fn wrap_flows_segments_onto_more_lines() {
+        let mut config = crate::themes::builtin("claude").unwrap();
+        config.style.wrap = true;
+        let ctx = Ctx {
+            payload: Payload {
+                cwd: "/home/me/project".into(),
+                git_branch: Some("main".into()),
+                lines_added: 12,
+                lines_removed: 3,
+                ..Default::default()
+            },
+            config,
+            palette: crate::appearance::DARK,
+            models: Models::default(),
+            stats: None,
+            tps: None,
+            effort: None,
+            session_created: None,
+            git: None,
+            pr: None,
+            quota: None,
+            now: 0.0,
+            color: false,
+        };
+        let full = render(&ctx, None);
+        let w = visible_width(&full);
+        assert!(!full.contains('\n'));
+        assert_eq!(render(&ctx, Some(w)), full);
+        let wrapped = render(&ctx, Some(w - 1));
+        assert!(wrapped.lines().count() > 1, "{wrapped:?}");
+        assert!(wrapped.lines().all(|l| visible_width(l) < w));
+        // nothing compacted or dropped: the same text, split
+        let strip = |s: &str| s.split_whitespace().collect::<String>();
+        assert_eq!(strip(&wrapped), strip(&full));
     }
 
     #[test]

@@ -33,6 +33,9 @@ pub struct StyleConfig {
     pub palette: String,
     /// Fixed render width; 0 detects the terminal.
     pub width: usize,
+    /// Continue on more lines when the width runs out, instead of compacting
+    /// and dropping segments.
+    pub wrap: bool,
 }
 
 impl Default for StyleConfig {
@@ -43,6 +46,7 @@ impl Default for StyleConfig {
             separator_color: None,
             palette: String::new(),
             width: 0,
+            wrap: false,
         }
     }
 }
