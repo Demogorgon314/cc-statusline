@@ -74,7 +74,7 @@ Model and live reasoning effort, context usage, Vim/agent/fast-mode badges, and 
 
 ![All ten built-in themes](assets/themes.png)
 
-10 built-in themes, from the Claude-colored default to full powerline. Run `cc-statusline` and choose the configurator, or open it directly with `cc-statusline config`:
+10 built-in themes, from the Claude-colored default to full powerline, all readable on both dark and light terminals: colors follow Claude Code's `theme` setting, and theme colors drawn on the terminal background are adjusted to keep text at WCAG AA contrast. Run `cc-statusline` and choose the configurator, or open it directly with `cc-statusline config`:
 
 ![Interactive TUI configurator](assets/configurator.png)
 
@@ -169,9 +169,9 @@ enabled = true
 options = { stale_secs = 300, hide_when_stale = false }
 ```
 
-Segments appear in configuration order; omitted segments are appended disabled. Use `cc-statusline init` for a complete starting point. TPS can hide stale or incomplete estimates with `hide_when_stale = true`; `stale_secs = 0` disables age-based dimming, but incomplete data remains dimmed.
+Segments appear in configuration order; omitted segments are appended disabled. With an icon, the cost segment drops its own `$` (`$ 1.23`); without one it keeps it (`$1.23`). Status line labels are English only; an old `lang` key is ignored. Use `cc-statusline init` for a complete starting point. TPS can hide stale or incomplete estimates with `hide_when_stale = true`; `stale_secs = 0` disables age-based dimming, but incomplete data remains dimmed.
 
-Colors accept palette names (`primary`, `accent`, `text_dim`, `success`, `warning`, `error`), `"#rrggbb"`, `{ c16 = 14 }`, `{ c256 = 208 }`, or `{ r = 1, g = 2, b = 3 }`. Custom palettes live in `palettes/<name>.json`, with a `base` (`dark` / `light`) and a `colors` object using camelCase names such as `textDim`.
+Colors accept palette names (`primary`, `accent`, `text_dim`, `success`, `warning`, `error`), `"#rrggbb"`, `{ c16 = 14 }`, `{ c256 = 208 }`, or `{ r = 1, g = 2, b = 3 }`. With `palette` unset, a `light*` Claude Code theme selects the light palette and anything else the dark one. Fixed RGB and 256 colors drawn on the terminal background are darkened or lightened just enough to reach 4.5:1 contrast against that palette, and bright 16-colors use their normal variant on light terminals; colors on a segment background are used as written. Custom palettes live in `palettes/<name>.json`, with a `base` (`dark` / `light`) and a `colors` object using camelCase names such as `textDim`.
 
 Built-in themes: `claude`, `cometix`, `default`, `minimal`, `gruvbox`, `nord`, `powerline-dark`, `powerline-light`, `powerline-rose-pine`, `powerline-tokyo-night`.
 

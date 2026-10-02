@@ -74,7 +74,7 @@ cc-statusline install
 
 ![全部 10 套内置主题](assets/themes.png)
 
-10 套内置主题，从 Claude 配色的默认样式，到完整的 powerline。运行 `cc-statusline` 后选择配置器，或用 `cc-statusline config` 直接打开：
+10 套内置主题，从 Claude 配色的默认样式，到完整的 powerline，在深色和浅色终端上都清晰可读：配色跟随 Claude Code 的 `theme` 设置，直接画在终端背景上的主题颜色会自动调整，保证文字达到 WCAG AA 对比度。运行 `cc-statusline` 后选择配置器，或用 `cc-statusline config` 直接打开：
 
 ![TUI 配置器](assets/configurator.png)
 
@@ -169,9 +169,9 @@ enabled = true
 options = { stale_secs = 300, hide_when_stale = false }
 ```
 
-段按配置顺序显示，未列出的段会追加但保持关闭。用 `cc-statusline init` 生成完整的初始配置。TPS 设置 `hide_when_stale = true` 可隐藏过时或不完整的估算；`stale_secs = 0` 可关闭按时间变暗，但不完整数据仍会变暗。
+段按配置顺序显示，未列出的段会追加但保持关闭。cost 段有图标时数值不带 `$`（`$ 1.23`），没有图标时保留（`$1.23`）。状态栏标签只有英文，旧配置里的 `lang` 会被忽略。用 `cc-statusline init` 生成完整的初始配置。TPS 设置 `hide_when_stale = true` 可隐藏过时或不完整的估算；`stale_secs = 0` 可关闭按时间变暗，但不完整数据仍会变暗。
 
-颜色支持配色名（`primary`、`accent`、`text_dim`、`success`、`warning`、`error` 等）、`"#rrggbb"`、`{ c16 = 14 }`、`{ c256 = 208 }` 或 `{ r = 1, g = 2, b = 3 }`。自定义配色放在 `palettes/<name>.json`，包含 `base`（`dark` / `light`）和 `colors` 对象，颜色键使用 `textDim` 等 camelCase 名称。
+颜色支持配色名（`primary`、`accent`、`text_dim`、`success`、`warning`、`error` 等）、`"#rrggbb"`、`{ c16 = 14 }`、`{ c256 = 208 }` 或 `{ r = 1, g = 2, b = 3 }`。自定义配色放在 `palettes/<name>.json`，包含 `base`（`dark` / `light`）和 `colors` 对象，颜色键使用 `textDim` 等 camelCase 名称。`palette` 留空时，Claude Code 主题为 `light*` 则用浅色配色，否则用深色。直接画在终端背景上的固定 RGB / 256 色会按配色背景加深或提亮，刚好达到 4.5:1 对比度；浅色终端上亮色 16 色改用普通色；带段背景色的颜色保持原样。
 
 内置主题：`claude`、`cometix`、`default`、`minimal`、`gruvbox`、`nord`、`powerline-dark`、`powerline-light`、`powerline-rose-pine`、`powerline-tokyo-night`。
 
