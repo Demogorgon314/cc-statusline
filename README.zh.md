@@ -154,7 +154,7 @@ theme = "claude"
 [style]
 mode = "plain"          # plain | nerd_font | powerline
 separator = "  "        # "" 为 powerline 箭头
-palette = "dark"        # dark | light | 自定义配色名
+palette = ""             # auto（跟随 Claude Code 主题）| dark | light | 自定义配色名
 width = 0              # 自动检测；--width 优先
 
 [[segments]]

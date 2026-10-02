@@ -76,6 +76,25 @@ impl Ctx {
     fn sgr(&self, color: &AnsiColor, bg: bool) -> Option<String> {
         self.color.then(|| color.sgr(&self.palette, bg)).flatten()
     }
+
+    /// A theme's fixed text color as drawn straight on the terminal: bright
+    /// ANSI colors wash out on light schemes, and RGB / 256 colors are
+    /// nudged until they read on the palette's background. Palette tokens
+    /// are already chosen for it, and colors on a segment background are
+    /// left to the theme.
+    fn on_terminal(&self, color: &AnsiColor) -> AnsiColor {
+        match color {
+            AnsiColor::Named(_) => color.clone(),
+            AnsiColor::Color16 { c16 } if *c16 >= 8 && self.palette.is_light() => {
+                AnsiColor::Color16 { c16: c16 - 8 }
+            }
+            AnsiColor::Color16 { .. } => color.clone(),
+            _ => match color.to_rgb(&self.palette) {
+                Some(c) => rgb(self.palette.readable(c)),
+                None => color.clone(),
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -595,9 +614,13 @@ fn paint_segment(ctx: &Ctx, seg: &SegmentConfig, spans: Vec<Span>) -> String {
     if let Some(bg) = &bg {
         out += &format!("\x1b[{bg}m ");
     }
+    let fit = |c: Option<&AnsiColor>| match (c, &bg) {
+        (Some(c), None) => Some(ctx.on_terminal(c)),
+        (c, _) => c.cloned(),
+    };
     let icon = icon_of(ctx, seg);
     if !icon.is_empty() {
-        out += &paint(ctx, icon, seg.colors.icon.as_ref(), false);
+        out += &paint(ctx, icon, fit(seg.colors.icon.as_ref()).as_ref(), false);
         out.push(' ');
     }
     for span in spans {
@@ -608,7 +631,8 @@ fn paint_segment(ctx: &Ctx, seg: &SegmentConfig, spans: Vec<Span>) -> String {
         } else {
             span.color.as_ref().or(seg.colors.text.as_ref())
         };
-        out += &paint_styled(ctx, &span.text, color, bold || span.bold, span.dim);
+        let color = fit(color);
+        out += &paint_styled(ctx, &span.text, color.as_ref(), bold || span.bold, span.dim);
     }
     if bg.is_some() {
         out.push(' ');

@@ -856,7 +856,7 @@ impl App {
                 format!(
                     "colors: {}",
                     if self.config.style.palette.is_empty() {
-                        "default"
+                        "auto"
                     } else {
                         &self.config.style.palette
                     }

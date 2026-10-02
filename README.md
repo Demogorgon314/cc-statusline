@@ -154,7 +154,7 @@ theme = "claude"
 [style]
 mode = "plain"          # plain | nerd_font | powerline
 separator = "  "        # "" for powerline arrows
-palette = "dark"        # dark | light | custom palette name
+palette = ""            # auto (follows Claude Code's theme) | dark | light | custom palette name
 width = 0              # auto-detect; --width overrides this
 
 [[segments]]

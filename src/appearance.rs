@@ -65,6 +65,35 @@ fn model_label(model: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn theme_colors_are_lifted_to_readable_contrast() {
+        for p in [DARK, LIGHT] {
+            for fg in [
+                Rgb(255, 255, 0),
+                Rgb(0, 0, 139),
+                Rgb(0x6B, 0x6B, 0x6B),
+                Rgb(250, 189, 47),
+            ] {
+                assert!(contrast(p.readable(fg), p.background) >= 4.5, "{fg:?}");
+            }
+            for token in [
+                "text",
+                "text_dim",
+                "text_muted",
+                "success",
+                "warning",
+                "error",
+            ] {
+                assert!(
+                    contrast(p.token(token).unwrap(), p.background) >= 4.5,
+                    "{token}"
+                );
+            }
+        }
+        // already readable colors are left alone
+        assert_eq!(LIGHT.readable(Rgb(0, 0, 139)), Rgb(0, 0, 139));
+    }
+
+    #[test]
     fn model_versions_ignore_release_dates_and_preserve_unknown_providers() {
         assert_eq!(model_label("claude-3-5-sonnet-20241022"), "Sonnet 3.5");
         assert_eq!(model_label("claude-opus-4-6[1m]"), "Opus 4.6 [1M]");
@@ -90,6 +119,9 @@ impl Rgb {
 /// The ColorPalette tokens the footer uses (upstream src/tui/theme/colors.ts).
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
+    /// The terminal background this palette is meant for, used to keep
+    /// fixed theme colors readable on it.
+    pub background: Rgb,
     pub text: Rgb,
     pub primary: Rgb,
     pub accent: Rgb,
@@ -101,17 +133,19 @@ pub struct Palette {
 }
 
 pub const DARK: Palette = Palette {
+    background: Rgb(0x16, 0x18, 0x1D),
     text: Rgb(0xE0, 0xE0, 0xE0),
     primary: Rgb(0x4F, 0xA8, 0xFF),
     accent: Rgb(0x5B, 0xC0, 0xBE),
-    text_dim: Rgb(0x88, 0x88, 0x88),
-    text_muted: Rgb(0x6B, 0x6B, 0x6B),
+    text_dim: Rgb(0x99, 0x99, 0x99),
+    text_muted: Rgb(0x82, 0x82, 0x82),
     success: Rgb(0x4E, 0xC8, 0x7E),
     warning: Rgb(0xE8, 0xA8, 0x38),
     error: Rgb(0xE8, 0x54, 0x54),
 };
 
 pub const LIGHT: Palette = Palette {
+    background: Rgb(0xFF, 0xFF, 0xFF),
     text: Rgb(0x1A, 0x1A, 0x1A),
     primary: Rgb(0x15, 0x65, 0xC0),
     accent: Rgb(0x00, 0x83, 0x8F),
@@ -123,6 +157,27 @@ pub const LIGHT: Palette = Palette {
 };
 
 impl Palette {
+    pub fn is_light(&self) -> bool {
+        luminance(self.background) > 0.5
+    }
+
+    /// `fg` moved toward black (light background) or white (dark) just
+    /// enough to reach WCAG AA contrast against the background.
+    pub fn readable(&self, fg: Rgb) -> Rgb {
+        const TARGET: f64 = 4.5;
+        let toward = if self.is_light() { 0.0 } else { 255.0 };
+        let mut c = fg;
+        for step in 1..=20 {
+            if contrast(c, self.background) >= TARGET {
+                break;
+            }
+            let t = step as f64 / 20.0;
+            let mix = |v: u8| (v as f64 + (toward - v as f64) * t).round() as u8;
+            c = Rgb(mix(fg.0), mix(fg.1), mix(fg.2));
+        }
+        c
+    }
+
     /// Look a token up by name; both `text_dim` and `textDim` spellings work.
     pub fn token(&self, name: &str) -> Option<Rgb> {
         Some(match name {
@@ -139,14 +194,46 @@ impl Palette {
     }
 }
 
+fn luminance(Rgb(r, g, b): Rgb) -> f64 {
+    let lin = |v: u8| {
+        let v = v as f64 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// WCAG contrast ratio, 1 to 21.
+pub fn contrast(a: Rgb, b: Rgb) -> f64 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
 /// Resolve a built-in palette or a JSON file in cc-statusline/palettes/.
+/// Unset or `auto` follows Claude Code's own `theme` setting.
 pub fn palette(override_theme: Option<&str>) -> Palette {
-    let theme = override_theme.map(str::to_string);
-    match theme.as_deref() {
-        None | Some("auto") | Some("dark") => DARK,
+    match override_theme {
+        None | Some("auto") => {
+            if claude_theme().is_some_and(|t| t.starts_with("light")) {
+                LIGHT
+            } else {
+                DARK
+            }
+        }
+        Some("dark") => DARK,
         Some("light") => LIGHT,
         Some(name) => custom_palette(name).unwrap_or(DARK),
     }
+}
+
+/// `theme` from Claude Code's settings.json: dark, light, light-daltonized...
+fn claude_theme() -> Option<String> {
+    let path = crate::paths::claude_home().join("settings.json");
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    v.get("theme")?.as_str().map(str::to_string)
 }
 
 fn custom_palette(name: &str) -> Option<Palette> {
