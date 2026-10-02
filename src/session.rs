@@ -53,6 +53,10 @@ pub struct SessionStats {
     pub created: Option<f64>,
     pub state: CollectionState,
     pub tps: Option<tps::Estimate>,
+    /// Logs (main or agent) with output inside the throughput window.
+    pub active_logs: usize,
+    /// Throughput per agent ID, from `agent-<id>.jsonl`.
+    pub agent_tps: BTreeMap<String, tps::Estimate>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +113,16 @@ fn identity(meta: &std::fs::Metadata) -> String {
 /// At most 4 MiB per file per refresh. Partial records remain unconsumed;
 /// oversized tool-result records are skipped without allocating their full size.
 const READ_LIMIT: usize = 4 * 1024 * 1024;
+/// Nested agent directories below `subagents/` to scan.
+const MAX_AGENT_DEPTH: usize = 2;
+
+/// `.../agent-<id>.jsonl` → `<id>`, the task ID in subagentStatusLine input.
+fn agent_id(file: &str) -> Option<&str> {
+    Path::new(file)
+        .file_stem()?
+        .to_str()?
+        .strip_prefix("agent-")
+}
 
 fn advance(path: &Path, cursor: &mut Cursor, session_id: &str) -> CollectionState {
     // Finished agents stay in the directory; most refreshes need only a stat.
@@ -317,22 +331,29 @@ impl Cache {
         let mut changed = false;
         let mut files = BTreeSet::from([path.to_string_lossy().into_owned()]);
         // The subagent directory belongs to this transcript, never the latest session.
-        let subdir = path.with_extension("").join("subagents");
+        // Workflow agents may write into nested per-run subdirectories.
+        let mut dirs = vec![(path.with_extension("").join("subagents"), 0)];
         let mut directory_complete = true;
-        match std::fs::read_dir(subdir) {
-            Ok(entries) => {
-                for entry in entries {
-                    match entry {
-                        Ok(e) if e.path().extension().is_some_and(|e| e == "jsonl") => {
-                            files.insert(e.path().to_string_lossy().into_owned());
+        while let Some((dir, depth)) = dirs.pop() {
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => {
+                    for entry in entries {
+                        let Ok(e) = entry else {
+                            directory_complete = false;
+                            continue;
+                        };
+                        let path = e.path();
+                        if path.extension().is_some_and(|e| e == "jsonl") {
+                            files.insert(path.to_string_lossy().into_owned());
+                        } else if depth < MAX_AGENT_DEPTH && e.file_type().is_ok_and(|t| t.is_dir())
+                        {
+                            dirs.push((path, depth + 1));
                         }
-                        Ok(_) => {}
-                        Err(_) => directory_complete = false,
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => directory_complete = false,
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => directory_complete = false,
         }
         let known = self.files.len();
         if directory_complete {
@@ -398,6 +419,8 @@ impl Cache {
             model: &'a str,
             usage: Usage,
             interval: Option<(f64, f64)>,
+            /// Log holding the earliest copy, which made the request.
+            owner: &'a str,
         }
         let mut requests: BTreeMap<&str, Request> = BTreeMap::new();
         for (file, cursor) in &self.files {
@@ -412,6 +435,7 @@ impl Cache {
                     model: &message.model,
                     usage: Usage::default(),
                     interval: None,
+                    owner: file,
                 });
                 entry.usage.merge(message.usage);
                 if file == transcript {
@@ -421,20 +445,33 @@ impl Cache {
                 if let (Some(start), Some(end)) = (message.start, message.end) {
                     if entry.interval.is_none_or(|(_, old)| end < old) {
                         entry.interval = Some((start.min(end), end));
+                        entry.owner = file;
                     }
                 }
             }
         }
-        stats.tps = tps::estimate(
-            requests.values().filter_map(|r| {
-                r.interval.map(|(start, end)| tps::Span {
+        let mut by_log: BTreeMap<&str, Vec<tps::Span>> = BTreeMap::new();
+        for r in requests.values() {
+            if let Some((start, end)) = r.interval {
+                by_log.entry(r.owner).or_default().push(tps::Span {
                     start,
                     end,
                     output: r.usage.output,
-                })
-            }),
-            now,
-        );
+                });
+            }
+        }
+        stats.tps = tps::estimate(by_log.values().flatten().copied(), now);
+        for (file, spans) in &by_log {
+            let Some(estimate) = tps::estimate(spans.iter().copied(), now) else {
+                continue;
+            };
+            if tps::is_active(&estimate, now) {
+                stats.active_logs += 1;
+            }
+            if let Some(id) = agent_id(file).filter(|_| *file != transcript) {
+                stats.agent_tps.insert(id.to_string(), estimate);
+            }
+        }
         for r in requests.values() {
             stats.total.add(&r.usage);
             if r.subagent {
@@ -556,6 +593,32 @@ mod tests {
         assert_eq!(rate(&f.refresh(&mut cache, 130.0)), 31.0);
         assert_eq!(rate(&f.refresh(&mut cache, 200.0)), 0.0);
         assert!(f.refresh(&mut cache, 2000.0).tps.is_none());
+    }
+
+    #[test]
+    fn nested_agents_report_their_own_rates_and_parallelism() {
+        let f = Fixture::new();
+        let nested = f.agents.join("wf_run");
+        std::fs::create_dir_all(&nested).unwrap();
+        append(&f.main, &(user(100.0) + &message("m1", 300, 110.0)));
+        std::fs::write(
+            f.agents.join("agent-aa.jsonl"),
+            user(100.0) + &message("a1", 600, 120.0),
+        )
+        .unwrap();
+        std::fs::write(
+            nested.join("agent-bb.jsonl"),
+            user(0.0) + &message("b1", 900, 10.0),
+        )
+        .unwrap();
+        let mut cache = Cache::default();
+        let stats = f.refresh(&mut cache, 130.0);
+        assert_eq!(stats.total.output, 1800);
+        assert_eq!(stats.agent_tps["aa"].tokens_per_sec, 20.0);
+        assert_eq!(stats.agent_tps["bb"].tokens_per_sec, 0.0);
+        assert!(!stats.agent_tps.contains_key("one"));
+        // main and aa produced output inside the window; bb finished long ago
+        assert_eq!(stats.active_logs, 2);
     }
 
     #[test]

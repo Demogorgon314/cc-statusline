@@ -27,6 +27,7 @@ CHROME = os.environ.get("SHOT_CHROME", "/Applications/Google Chrome.app/Contents
 FONT = os.environ.get("SHOT_FONT", "Hack Nerd Font Mono")
 
 PAYLOAD = {}
+TASKS = {}
 
 XTERM16 = ["#1d1f21", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd",
            "#56b6c2", "#dcdfe4", "#5c6370", "#ff7b86", "#b5e890", "#ffd88a",
@@ -64,15 +65,37 @@ def setup_home():
         agents = os.path.splitext(transcript)[0] + "/subagents"
         os.makedirs(agents)
         now = datetime.datetime.now(datetime.timezone.utc)
-        def message(ident, model, output):
+        def at(ago):
+            return (now - datetime.timedelta(seconds=ago)).isoformat()
+        def user(ago):
+            return json.dumps({"type": "user", "sessionId": "session_demo", "timestamp": at(ago)}) + "\n"
+        def message(ident, model, output, ago):
             return json.dumps({"type": "assistant", "sessionId": "session_demo",
-                "timestamp": now.isoformat(), "message": {"id": ident, "model": model,
+                "timestamp": at(ago), "message": {"id": ident, "model": model,
                 "usage": {"input_tokens": 2100, "output_tokens": output,
                           "cache_read_input_tokens": 96000}}}) + "\n"
+        # Timestamps drive TPS: two agents and the main loop are mid-request.
         with open(transcript, "w") as f:
-            f.writelines(message(f"main-{i}", "Opus", 3900) for i in range(12))
-        with open(os.path.join(agents, "agent-demo.jsonl"), "w") as f:
-            f.writelines(message(f"sub-{i}", "Sonnet", 1400) for i in range(3))
+            for i in range(12):
+                f.write(user(3600 - i * 300) + message(f"main-{i}", "Opus", 3900, 3560 - i * 300))
+            f.write(user(40) + message("main-next", "Opus", 900, 2))
+        for agent, model, outputs in [("explore", "claude-sonnet-5-5", (1400, 1100)),
+                                      ("review", "claude-haiku-4-5", (2400,)),
+                                      ("plan", "claude-sonnet-5-5", (900,))]:
+            done = agent == "plan"
+            with open(os.path.join(agents, f"agent-{agent}.jsonl"), "w") as f:
+                for i, output in enumerate(outputs):
+                    end = 600 - i * 30 if done else 25 - i * 22
+                    f.write(user(end + 20) + message(f"{agent}-{i}", model, output, end))
+        TASKS.clear()
+        TASKS.update({"session_id": "session_demo", "transcript_path": transcript, "tasks": [
+            {"id": "explore", "name": "Explore", "model": "claude-sonnet-5-5", "status": "running",
+             "tokenCount": 45900, "contextWindowSize": 200000},
+            {"id": "review", "name": "code-reviewer", "model": "claude-haiku-4-5", "status": "running",
+             "tokenCount": 171000, "contextWindowSize": 200000},
+            {"id": "plan", "name": "Plan", "model": "claude-sonnet-5-5", "status": "completed",
+             "tokenCount": 33500, "contextWindowSize": 1000000},
+            {"id": "pending", "name": "general-purpose", "status": "pending"}]})
         PAYLOAD.clear()
         PAYLOAD.update({
             "session_id": "session_demo", "transcript_path": transcript,
@@ -87,11 +110,6 @@ def setup_home():
                 "five_hour": {"used_percentage": 42, "resets_at": int(time.time()) + 4800},
                 "seven_day": {"used_percentage": 63, "resets_at": int(time.time()) + 266400}},
             "pr": {"number": 42, "url": "https://example.invalid/demo/pull/42"}})
-        render(home, "claude", 300)
-        with open(transcript, "a") as f:
-            f.write(message("main-next", "Opus", 420))
-        PAYLOAD["cost"]["total_api_duration_ms"] += 10000
-        render(home, "claude", 300)
         return home
     except BaseException:
         shutil.rmtree(home)
@@ -110,6 +128,12 @@ def render(home, theme, width):
                          input=json.dumps(PAYLOAD), text=True, capture_output=True,
                          env=demo_env(home), check=True)
     return out.stdout.rstrip("\n")
+
+
+def panel(home, width):
+    out = subprocess.run([BIN, "subagents", "--width", str(width)], input=json.dumps(TASKS),
+                         text=True, capture_output=True, env=demo_env(home), check=True)
+    return [json.loads(line)["content"] for line in out.stdout.splitlines()]
 
 
 def ansi_to_html(s, default_fg):
@@ -225,7 +249,7 @@ def main():
     home = setup_home()
     try:
         hero = ansi_to_html(render(home, "claude", 300), "#e0e0e0")
-        shoot(page(claude_footer(hero), "Claude Code — demo session", minw=1180), "hero.png", 2400)
+        shoot(page(claude_footer(hero), "Claude Code — demo session", minw=1180), "hero.png", 3000)
 
         rows = []
         for theme in ["claude", "cometix", "default", "minimal", "gruvbox", "nord", "powerline-dark",
@@ -237,7 +261,15 @@ def main():
         segs = []
         for w, label in [(300, "300 columns"), (150, "150 columns"), (110, "110 columns"), (80, "80 columns")]:
             segs.append('<div class="label">%s</div>%s' % (label, ansi_to_html(render(home, "claude", w), "")))
-        shoot(page("\n".join(segs), "adaptive width", minw=1000), "adaptive.png", 2400)
+        shoot(page("\n".join(segs), "adaptive width", minw=1000), "adaptive.png", 3000)
+
+        tree = '<span class="dim">  ⎿ </span>'
+        agents = [claude_footer(ansi_to_html(render(home, "claude", 160), ""))]
+        agents += [tree + ansi_to_html(row, "") for row in panel(home, 90)]
+        for w in (60, 30):
+            agents.append('<div class="label">agent panel at %d columns</div>' % w
+                          + "\n".join(tree + ansi_to_html(row, "") for row in panel(home, w)))
+        shoot(page("\n".join(agents), "parallel subagents", minw=1000), "subagents.png", 2400)
     finally:
         shutil.rmtree(home, ignore_errors=True)
 

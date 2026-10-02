@@ -92,6 +92,10 @@ cc-statusline is a single Rust binary. Work stays bounded as your session grows:
 
 ![Adaptive status line at four terminal widths](assets/adaptive.png)
 
+With parallel subagents, the footer shows their combined output rate and how many logs are producing it (`≈39 t/s ×2`); the optional agent panel gives each subagent its own rate and context share, dropping fields uniformly as it narrows.
+
+![Parallel subagents in the footer and the agent panel at three widths](assets/subagents.png)
+
 ## Reference
 
 <details>
@@ -107,13 +111,13 @@ cc-statusline is a single Rust binary. Work stays bounded as your session grows:
 | `git` | Branch, diff, conflicts, ahead/behind, open PR (fallback lookup needs `gh`) |
 | `context` | Main conversation context percentage and input tokens / capacity |
 | `usage` | Whole-session input ↑ / output ↓ / cache hit rate, including subagents |
-| `subagent` | Cumulative subagent usage: top two models by input, plus `+N` for the rest |
+| `subagent` | Cumulative subagent usage: top two models by input, plus `+N models`; compact lines show the subagent total |
 | `session` | Accumulated session duration (disabled by default) |
 | `quota` | Five-hour / seven-day quota, optional gateway spend limit, reset times |
 | `changes` | Session lines added/removed (disabled by default) |
-| `tps` | Recent session output per wall-clock second: `≈42 tok/s` (compact: `≈42 t/s`) |
+| `tps` | Recent session output per wall-clock second: `≈42 tok/s`, with `×3` when three logs produced output in the window (compact: `≈42 t/s ×3`) |
 
-When space runs out, segments drop in this order: session → tps → changes → git → directory → subagent → output_style → cost → context → quota → mode.
+When space runs out, segments drop in this order: session → changes → git → directory → subagent → tps → output_style → cost → context → quota → mode.
 
 `main ctx` counts the main conversation's input plus cache reads and writes, excluding output; Claude's native percentage takes precedence. Subagents have independent contexts and are not added to this percentage. Session totals come from the exact supplied transcript and its adjacent subagent logs, deduplicated by message ID. The `sub` segment includes finished tasks and groups them by model, not by agent; compact mode shows the largest model and a count of the rest. Incomplete totals are marked `≈` and dimmed. Missing sessions never inherit another session's statistics. Quota belongs to the account and can persist across sessions.
 
@@ -135,7 +139,7 @@ New configurations enable TPS. In existing configurations, enable **TPS** in `cc
 
 Run `cc-statusline install --subagents` to install the separate agent-panel renderer. It preserves the main status line and refuses to replace another renderer unless `--force` is supplied. `cc-statusline uninstall --subagents` removes only this hook. No settings are changed by merely building or running the renderer.
 
-The hook invokes `cc-statusline subagents`, reads Claude's `tasks` array and prints one JSON row per task with its name, model, status, and individual context percentage. Missing context fields show `ctx ?`, never a fabricated zero. Rows fit the provided `columns` width; `--width` overrides it. Context fields require Claude Code v2.1.205 or later; see the [subagent status line protocol](https://code.claude.com/docs/en/statusline#subagent-status-lines).
+The hook invokes `cc-statusline subagents`, reads Claude's `tasks` array and prints one JSON row per task with its name, model, status, its own recent output rate (from `agent-<id>.jsonl`, running tasks only) and individual context percentage. Missing context fields show `ctx ?`, never a fabricated zero. Rows fit the provided `columns` width (`--width` overrides it) by dropping fields for the whole panel at once, in this order: token counts, status, labels, model, rate; the context share stays, and only then is the name shortened. Context fields require Claude Code v2.1.205 or later; see the [subagent status line protocol](https://code.claude.com/docs/en/statusline#subagent-status-lines).
 
 </details>
 

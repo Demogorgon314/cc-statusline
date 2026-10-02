@@ -92,6 +92,10 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 
 ![四种终端宽度下的自适应效果](assets/adaptive.png)
 
+并行运行子任务时，底栏显示合计输出速度和正在输出的日志数（`≈39 t/s ×2`）；可选的子任务面板为每个子任务单独显示速度和上下文占比，变窄时整个面板统一去掉字段。
+
+![并行子任务：底栏与三种宽度下的子任务面板](assets/subagents.png)
+
 ## 参考
 
 <details>
@@ -107,13 +111,13 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 | `git` | 分支、改动统计、冲突、ahead/behind、打开的 PR（回退查询需要 `gh`） |
 | `context` | 主会话上下文占用百分比和输入 token / 容量 |
 | `usage` | 整个会话的输入 ↑ / 输出 ↓ / 缓存命中率，包含子 agent |
-| `subagent` | 子任务累计用量：输入最多的两个模型，其余显示 `+N` |
+| `subagent` | 子任务累计用量：输入最多的两个模型，其余显示 `+N 个模型`；紧凑模式显示子任务合计 |
 | `session` | 累计会话时长（默认关闭） |
 | `quota` | 5h / 7d 额度、可选的网关消费上限和重置时间 |
 | `changes` | 会话新增 / 删除行数（默认关闭） |
-| `tps` | 近期会话输出 / 墙钟秒：`≈42 tok/s`（紧凑模式为 `≈42 t/s`） |
+| `tps` | 近期会话输出 / 墙钟秒：`≈42 tok/s`；窗口内有三个日志在输出时附加 `×3`（紧凑模式为 `≈42 t/s ×3`） |
 
-空间不够时按这个顺序去掉：session → tps → changes → git → directory → subagent → output_style → cost → context → quota → mode。
+空间不够时按这个顺序去掉：session → changes → git → directory → subagent → tps → output_style → cost → context → quota → mode。
 
 “主上下文”统计主会话的输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。各子任务拥有独立上下文，不累加到这个百分比。“子任务”段按模型汇总累计用量，包含已完成任务；紧凑模式只显示输入最多的一个模型和其余模型数量。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重；不完整的用量以 `≈` 标记并变暗。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
 
@@ -135,7 +139,7 @@ Claude 在每个内容块结束后才写入日志。因此不在刷新时“看�
 
 执行 `cc-statusline install --subagents` 安装独立的子任务面板渲染器。保留主状态栏；遇到其他渲染器时，只有显式传入 `--force` 才会替换。`cc-statusline uninstall --subagents` 仅移除此 hook。构建程序或单独运行渲染器不会修改设置。
 
-该 hook 调用 `cc-statusline subagents`，接收 Claude 的 `tasks` 数组，逐行输出 JSON，展示各任务名称、模型、状态和独立上下文占比。缺少上下文字段时显示 `上下文 ?`，不会误报为零。行宽遵循输入的 `columns`，可用 `--width` 覆盖。上下文字段需要 Claude Code v2.1.205 或更新版本，详见[官方协议](https://code.claude.com/docs/en/statusline#subagent-status-lines)。
+该 hook 调用 `cc-statusline subagents`，接收 Claude 的 `tasks` 数组，逐行输出 JSON，展示各任务名称、模型、状态、各自的近期输出速度（来自 `agent-<id>.jsonl`，仅运行中任务）和独立上下文占比。缺少上下文字段时显示 `上下文 ?`，不会误报为零。行宽遵循输入的 `columns`（可用 `--width` 覆盖），整个面板统一按顺序去掉字段：token 明细、状态、标签、模型、速度；上下文占比始终保留，最后才缩短名称。上下文字段需要 Claude Code v2.1.205 或更新版本，详见[官方协议](https://code.claude.com/docs/en/statusline#subagent-status-lines)。
 
 </details>
 

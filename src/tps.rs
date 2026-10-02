@@ -56,6 +56,11 @@ pub fn estimate(spans: impl IntoIterator<Item = Span>, now: f64) -> Option<Estim
     })
 }
 
+/// Output inside the current window, so the log counts as working in parallel.
+pub fn is_active(estimate: &Estimate, now: f64) -> bool {
+    estimate.tokens_per_sec > 0.0 && now - estimate.measured_at < WINDOW_SECS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

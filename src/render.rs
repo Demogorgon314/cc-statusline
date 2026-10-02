@@ -228,8 +228,15 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 return None;
             }
             let unit = if compact { "t/s" } else { "tok/s" };
+            // A summed rate needs its parallelism to be read correctly.
+            let active = ctx.stats.as_ref().map_or(0, |s| s.active_logs);
+            let parallel = if active > 1 {
+                format!(" ×{active}")
+            } else {
+                String::new()
+            };
             Some(vec![Span {
-                text: format!("≈{:.0} {unit}", estimate.tokens_per_sec),
+                text: format!("≈{:.0} {unit}{parallel}", estimate.tokens_per_sec),
                 color: stale.then(|| token("text_muted")),
                 bold: false,
                 dim: stale,
@@ -358,17 +365,34 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 return None;
             }
             models.sort_by(|(a, ua), (b, ub)| ub.input().cmp(&ua.input()).then_with(|| a.cmp(b)));
-            let limit = if compact { 1 } else { 2 };
             let mut spans = vec![plain(if zh { "子任务 " } else { "sub " })];
-            for (i, (model, u)) in models.iter().take(limit).enumerate() {
-                if i > 0 {
-                    spans.push(plain("; "));
+            if compact {
+                // Narrow lines keep the subagent total rather than one model.
+                let mut total = Usage::default();
+                for (_, u) in &models {
+                    total.add(u);
                 }
-                spans.push(plain(format!("{} ", ctx.models.display(model))));
-                spans.extend(usage_triple(ctx, seg, u, compact));
-            }
-            if models.len() > limit {
-                spans.push(plain(format!(" +{}", models.len() - limit)));
+                spans.extend(usage_triple(ctx, seg, &total, compact));
+            } else {
+                const LIMIT: usize = 2;
+                for (i, (model, u)) in models.iter().take(LIMIT).enumerate() {
+                    if i > 0 {
+                        spans.push(plain("; "));
+                    }
+                    spans.push(plain(format!("{} ", ctx.models.display(model))));
+                    spans.extend(usage_triple(ctx, seg, u, compact));
+                }
+                let more = models.len().saturating_sub(LIMIT);
+                if more > 0 {
+                    spans.push(colored(
+                        match (zh, more) {
+                            (true, _) => format!(" +{more} 个模型"),
+                            (false, 1) => " +1 model".into(),
+                            (false, _) => format!(" +{more} models"),
+                        },
+                        token("text_muted"),
+                    ));
+                }
             }
             if st.state != crate::session::CollectionState::Complete {
                 spans.insert(0, plain("≈"));
@@ -683,11 +707,12 @@ pub fn render(ctx: &Ctx, width: Option<usize>) -> String {
     use SegmentId::*;
     const DROP_ORDER: [SegmentId; 11] = [
         Session,
-        Tps,
         Changes,
         Git,
         Directory,
         Subagent,
+        // the compact rate is short and the only live signal of parallel work
+        Tps,
         OutputStyle,
         Cost,
         Context,

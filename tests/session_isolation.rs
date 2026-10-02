@@ -186,6 +186,70 @@ fn subagent_rows_keep_individual_context_and_fit_the_panel() {
 }
 
 #[test]
+fn subagent_panel_shows_per_agent_rates_and_degrades_uniformly() {
+    let f = Fixture::new(&[]);
+    let path = f.transcript("one");
+    std::fs::write(&path, "").unwrap();
+    let dir = path.with_extension("").join("subagents");
+    std::fs::create_dir_all(&dir).unwrap();
+    let now = chrono::Utc::now();
+    let at = |secs: i64| (now - chrono::Duration::seconds(secs)).to_rfc3339();
+    let user = json!({"type":"user","sessionId":"one","timestamp":at(10)});
+    let reply = json!({"type":"assistant","sessionId":"one","timestamp":at(0),
+        "message":{"id":"x","model":"claude-sonnet-4-6","usage":{"output_tokens":500}}});
+    std::fs::write(dir.join("agent-a.jsonl"), format!("{user}\n{reply}\n")).unwrap();
+    let rows = |columns: u64| -> Vec<String> {
+        let input = json!({"session_id":"one","transcript_path":path,"columns":columns,"tasks":[
+            {"id":"a","name":"Search","model":"claude-sonnet-4-6","status":"running","tokenCount":40000,"contextWindowSize":200000},
+            {"id":"b","name":"Review","model":"claude-opus-4-6","status":"completed","tokenCount":20000,"contextWindowSize":1000000}
+        ]});
+        f.text(&["subagents"], &input)
+            .lines()
+            .map(|l| {
+                serde_json::from_str::<Value>(l).unwrap()["content"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    // ≈50 t/s, less the time this test takes to reach the renderer
+    let rate = |row: &str| -> u64 {
+        row.split('≈')
+            .nth(1)
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let wide = rows(120);
+    assert!((40..=50).contains(&rate(&wide[0])), "{wide:?}");
+    assert!(
+        wide[0].ends_with(" t/s · ctx 20% (40.0k/200.0k)") && wide[0].contains("running · ≈"),
+        "{wide:?}"
+    );
+    assert!(
+        !wide[1].contains("t/s"),
+        "finished agents have no live rate: {wide:?}"
+    );
+    // Every row uses the same level, and the share survives the narrowest one.
+    let narrow = rows(28);
+    assert!(
+        narrow[0].starts_with("Search · ≈") && narrow[0].ends_with(" t/s · 20%"),
+        "{narrow:?}"
+    );
+    assert_eq!(narrow[1], "Review · 2%");
+    for row in rows(9) {
+        assert!(
+            row.ends_with('%') && unicode_width::UnicodeWidthStr::width(row.as_str()) <= 9,
+            "{row}"
+        );
+    }
+}
+
+#[test]
 fn subagent_hook_installation_preserves_the_main_hook_and_other_owners() {
     let f = Fixture::new(&[]);
     let path = f.0.join("settings.json");
