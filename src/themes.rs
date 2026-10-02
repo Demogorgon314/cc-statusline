@@ -25,8 +25,9 @@ fn icons(id: SegmentId, minimal: bool) -> (&'static str, &'static str) {
     match (id, minimal) {
         (Mode, false) => ("🛡️", "\u{f0483}"),
         (Mode, true) => ("◆", "\u{f0483}"),
-        (Cost, false) => ("💰", "\u{f155}"),
-        (Cost, true) => ("$", "\u{f155}"),
+        // never a dollar sign: the value already starts with one
+        (Cost, false) => ("💰", "\u{f0114}"),
+        (Cost, true) => ("", "\u{f0114}"),
         (Model, false) => ("🤖", "\u{e26d}"),
         (Model, true) => ("✽", "\u{f2d0}"),
         (OutputStyle, false) => ("✎", "\u{f040}"),
@@ -459,6 +460,7 @@ fn load_file(name: &str) -> Option<Config> {
     let mut cfg: Config = toml::from_str(&text).ok()?;
     cfg.theme = name.into();
     cfg.add_missing_segments();
+    cfg.migrate_icons();
     Some(cfg)
 }
 
@@ -496,6 +498,34 @@ pub fn list() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cost_never_shows_two_dollar_signs() {
+        for (name, _) in BUILTIN {
+            let seg = builtin(name)
+                .unwrap()
+                .segment(SegmentId::Cost)
+                .cloned()
+                .unwrap();
+            assert!(!seg.icon.plain.contains('$') && seg.icon.nerd_font != "\u{f155}");
+        }
+        let mut cfg = builtin("minimal").unwrap();
+        for seg in &mut cfg.segments {
+            if seg.id == SegmentId::Cost {
+                seg.icon.plain = "$".into();
+                seg.icon.nerd_font = "\u{f155}".into();
+            }
+        }
+        cfg.migrate_icons();
+        assert_eq!(
+            cfg.segment(SegmentId::Cost).unwrap().icon,
+            builtin("minimal")
+                .unwrap()
+                .segment(SegmentId::Cost)
+                .unwrap()
+                .icon
+        );
+    }
 
     #[test]
     fn configs_with_the_removed_lang_key_still_load() {
