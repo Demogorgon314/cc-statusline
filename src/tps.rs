@@ -1,183 +1,151 @@
-//! Request-time-normalized output throughput, not streaming decode speed.
-//!
-//! Transcript output and Claude's API timer are independently updated. Keep
-//! a baseline until both counters advance; never divide new tokens by an
-//! unchanged timer or count historical transcript catch-up as fresh output.
-use crate::{paths, payload::Payload, session::SessionStats};
+//! Recent session output per wall-clock second, including parallel agents.
+//! Usage snapshots and API timers have no shared request boundary. Never divide
+//! their independent deltas; timestamp deduplicated output when it is observed.
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, VecDeque};
 
-/// A long gap can mean a resumed Claude process with different counter scope.
+const WINDOW_SECS: f64 = 30.0;
 const MAX_SAMPLE_GAP_SECS: f64 = 1800.0;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Estimate {
     pub tokens_per_sec: f64,
+    /// Time of the last new output, not the last idle refresh.
     pub measured_at: f64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-struct Counters {
-    output: u64,
-    api_ms: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Sampler {
-    source: String,
-    model: String,
-    baseline: Counters,
-    observed: Counters,
+#[derive(Default, Serialize, Deserialize)]
+pub struct Sampler {
+    started_at: Option<f64>,
     observed_at: f64,
+    /// High-water marks survive file replacement/removal and forked copies.
+    seen: BTreeMap<String, u64>,
+    buckets: VecDeque<(i64, u64)>,
+    last_output_at: Option<f64>,
     last: Option<Estimate>,
 }
 
-/// How stale the stored `observed_at` may get before an idle refresh rewrites it.
-const REWRITE_IDLE_SECS: f64 = 60.0;
-
 impl Sampler {
-    /// Everything but `observed_at`.
-    fn state(&self) -> String {
-        format!(
-            "{}\0{}\0{:?}\0{:?}\0{:?}",
-            self.source, self.model, self.baseline, self.observed, self.last
-        )
-    }
-
-    fn new(source: &str, model: &str, counters: Counters, now: f64) -> Self {
-        Self {
-            source: source.into(),
-            model: model.into(),
-            baseline: counters,
-            observed: counters,
-            observed_at: now,
-            last: None,
-        }
-    }
-
-    fn observe(&mut self, source: &str, model: &str, counters: Counters, now: f64) {
-        if self.source != source
-            || self.model != model
-            || counters.output < self.observed.output
-            || counters.api_ms < self.observed.api_ms
+    /// Returns true when existing files need a fresh historical baseline.
+    pub fn begin(&mut self, now: f64) -> bool {
+        let reset = self.started_at.is_none()
             || now < self.observed_at
-            || now - self.observed_at > MAX_SAMPLE_GAP_SECS
+            || now - self.observed_at > MAX_SAMPLE_GAP_SECS;
+        if reset {
+            self.started_at = Some(now);
+            self.buckets.clear();
+            self.last_output_at = None;
+            self.last = None;
+        }
+        self.observed_at = now;
+        // One-second buckets bound cache size even under frequent refreshes.
+        while self
+            .buckets
+            .front()
+            .is_some_and(|(at, _)| *at as f64 <= now - WINDOW_SECS)
         {
-            *self = Self::new(source, model, counters, now);
+            self.buckets.pop_front();
+        }
+        reset
+    }
+
+    pub fn record(&mut self, id: String, output: u64, live: bool, now: f64) {
+        let previous = self.seen.entry(id).or_default();
+        let delta = output.saturating_sub(*previous);
+        *previous = (*previous).max(output);
+        if !live || delta == 0 {
             return;
         }
-        let output = counters.output - self.baseline.output;
-        let api_ms = counters.api_ms - self.baseline.api_ms;
-        if output > 0 && api_ms > 0 {
-            self.last = Some(Estimate {
-                tokens_per_sec: output as f64 * 1000.0 / api_ms as f64,
-                measured_at: now,
-            });
-            self.baseline = counters;
+        let second = now.floor() as i64;
+        if let Some((_, tokens)) = self.buckets.back_mut().filter(|(at, _)| *at == second) {
+            *tokens = tokens.saturating_add(delta);
+        } else {
+            self.buckets.push_back((second, delta));
         }
-        self.observed = counters;
-        self.observed_at = now;
+        self.last_output_at = Some(now);
     }
-}
 
-pub fn get(payload: &Payload, stats: Option<&SessionStats>, now: f64) -> Option<Estimate> {
-    if payload.session_id.is_empty() || payload.transcript_path.is_empty() {
-        return None;
-    }
-    let key = paths::short_hash(&format!(
-        "{}\0{}",
-        payload.transcript_path, payload.session_id
-    ));
-    let path = paths::cache_dir().join(format!("tps-v1-{key}.json"));
-    let previous: Option<Sampler> = std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let valid = stats
-        .filter(|stats| stats.complete)
-        .zip(payload.api_duration_ms);
-    let Some((stats, api_ms)) = valid else {
-        // Drop the baseline as well: the next complete read may include old
-        // output whose API time was already accounted for.
-        if !payload.is_preview {
-            let _ = std::fs::remove_file(path);
+    pub fn finish(&mut self, now: f64, complete: bool) -> Option<Estimate> {
+        // Keep the previous trustworthy estimate during partial collection.
+        // Healthy files still contribute buckets, without making old data fresh.
+        if complete {
+            let elapsed = now - self.started_at?;
+            if elapsed >= 1.0 {
+                if let Some(measured_at) = self.last_output_at {
+                    let output = self
+                        .buckets
+                        .iter()
+                        .fold(0u64, |n, (_, v)| n.saturating_add(*v));
+                    self.last = Some(Estimate {
+                        tokens_per_sec: output as f64 / elapsed.min(WINDOW_SECS),
+                        measured_at,
+                    });
+                }
+            }
         }
-        return None;
-    };
-    if payload.is_preview {
-        return previous
-            .filter(|s| s.source == stats.source && s.model == payload.model)
-            .and_then(|s| s.last);
+        self.last
     }
-    let counters = Counters {
-        output: stats.total.output,
-        api_ms,
-    };
-    let before = previous.as_ref().map(|s| (s.state(), s.observed_at));
-    let mut sampler =
-        previous.unwrap_or_else(|| Sampler::new(&stats.source, &payload.model, counters, now));
-    sampler.observe(&stats.source, &payload.model, counters, now);
-    // idle refreshes only need to keep `observed_at` within MAX_SAMPLE_GAP_SECS
-    let unchanged = before.is_some_and(|(state, at)| {
-        state == sampler.state() && sampler.observed_at - at < REWRITE_IDLE_SECS
-    });
-    if !unchanged {
-        if let Ok(bytes) = serde_json::to_vec(&sampler) {
-            let _ = paths::write_atomic(&path, &bytes);
-        }
+
+    pub fn estimate(&self) -> Option<Estimate> {
+        self.last
     }
-    sampler.last
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn counts(output: u64, api_ms: u64) -> Counters {
-        Counters { output, api_ms }
+    #[test]
+    fn interleaved_agents_share_a_wall_clock_window() {
+        let mut s = Sampler::default();
+        s.begin(0.0);
+        s.begin(10.0);
+        s.record("a".into(), 420, true, 10.0);
+        assert_eq!(s.finish(10.0, true).unwrap().tokens_per_sec, 42.0);
+        s.begin(20.0);
+        s.record("b".into(), 420, true, 20.0);
+        assert_eq!(s.finish(20.0, true).unwrap().tokens_per_sec, 42.0);
+        s.begin(21.0);
+        s.record("c".into(), 42, true, 21.0);
+        assert_eq!(s.finish(21.0, true).unwrap().tokens_per_sec, 42.0);
+        s.record("a".into(), 420, true, 21.0);
+        assert_eq!(s.finish(21.0, true).unwrap().tokens_per_sec, 42.0);
     }
 
     #[test]
-    fn staggered_counters_and_idle_refreshes_do_not_distort_rate() {
-        let mut s = Sampler::new("log", "Opus", counts(100, 1000), 0.0);
-        assert!(s.last.is_none());
-        s.observe("log", "Opus", counts(520, 1000), 1.0);
-        assert!(s.last.is_none(), "tokens arrived before the API timer");
-        s.observe("log", "Opus", counts(520, 11000), 2.0);
-        assert_eq!(s.last.unwrap().tokens_per_sec, 42.0);
-        s.observe("log", "Opus", counts(520, 11000), 60.0);
-        assert_eq!(
-            s.last.unwrap().measured_at,
-            2.0,
-            "idle does not refresh freshness"
-        );
-        s.observe("log", "Opus", counts(520, 21000), 61.0);
-        s.observe("log", "Opus", counts(820, 21000), 62.0);
-        assert_eq!(
-            s.last.unwrap().tokens_per_sec,
-            30.0,
-            "timer may also arrive first"
-        );
+    fn history_partial_reads_expiry_and_resume() {
+        let mut s = Sampler::default();
+        s.begin(0.0);
+        s.record("history".into(), 9000, false, 0.0);
+        s.begin(10.0);
+        s.record("live".into(), 420, true, 10.0);
+        let last = s.finish(10.0, true).unwrap();
+        s.begin(11.0);
+        s.record("other".into(), 42, true, 11.0);
+        assert_eq!(s.finish(11.0, false), Some(last));
+        assert_eq!(s.finish(11.0, true).unwrap().tokens_per_sec, 42.0);
+        s.begin(41.0);
+        let idle = s.finish(41.0, true).unwrap();
+        assert_eq!(idle.tokens_per_sec, 0.0);
+        assert_eq!(idle.measured_at, 11.0);
+        assert!(s.begin(2000.0));
+        assert!(s.finish(2000.0, true).is_none());
+        s.record("live".into(), 420, true, 2000.0);
+        assert!(s.finish(2002.0, true).is_none());
+        assert!(s.begin(1000.0), "clock rollback rebaselines");
     }
 
     #[test]
-    fn counter_rollback_source_model_and_resume_rebaseline() {
-        for (source, model, counters, now) in [
-            ("log", "Opus", counts(50, 12000), 3.0),
-            ("log", "Opus", counts(900, 500), 3.0),
-            ("replaced-log", "Opus", counts(900, 12000), 3.0),
-            ("log", "Sonnet", counts(900, 12000), 3.0),
-            ("log", "Opus", counts(900, 12000), MAX_SAMPLE_GAP_SECS + 3.0),
-        ] {
-            let mut s = Sampler::new("log", "Opus", counts(0, 0), 0.0);
-            s.observe("log", "Opus", counts(420, 10000), 1.0);
-            s.observe(source, model, counters, now);
-            assert!(s.last.is_none());
-            s.observe(
-                source,
-                model,
-                counts(counters.output + 100, counters.api_ms + 2000),
-                now + 1.0,
-            );
-            assert_eq!(s.last.unwrap().tokens_per_sec, 50.0);
+    fn warmup_and_subsecond_updates_are_bounded() {
+        let mut s = Sampler::default();
+        s.begin(0.0);
+        for i in 1..100 {
+            let now = i as f64 / 100.0;
+            s.begin(now);
+            s.record("stream".into(), i, true, now);
+            assert!(s.finish(now, true).is_none());
         }
+        assert_eq!(s.buckets.len(), 1);
+        assert_eq!(s.finish(1.0, true).unwrap().tokens_per_sec, 99.0);
     }
 }

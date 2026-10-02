@@ -10,6 +10,7 @@ mod probe;
 mod quota;
 mod render;
 mod session;
+mod subagent;
 mod themes;
 mod tps;
 mod tui;
@@ -49,9 +50,18 @@ enum Cmd {
         /// Replace an existing non-cc-statusline command
         #[arg(long)]
         force: bool,
+        /// Install the per-agent panel renderer instead of the main status line
+        #[arg(long)]
+        subagents: bool,
     },
     /// Remove our statusLine from settings.json
-    Uninstall,
+    Uninstall {
+        /// Remove only our per-agent panel renderer
+        #[arg(long)]
+        subagents: bool,
+    },
+    /// Render subagentStatusLine JSON rows from a tasks array on stdin
+    Subagents,
     /// Write the config file from a theme (default: claude)
     Init {
         #[arg(long)]
@@ -88,14 +98,47 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Some(Cmd::Config) => tui::run_configurator(),
-        Some(Cmd::Install { command, force }) => install_cmd(command, force),
-        Some(Cmd::Uninstall) => install::uninstall().map(|changed| {
+        Some(Cmd::Install {
+            command,
+            force,
+            subagents,
+        }) => {
+            if subagents {
+                install::install_subagents(command, force).map(|o| {
+                    println!(
+                        "subagentStatusLine.command = {:?}{}",
+                        o.command,
+                        if o.changed {
+                            ""
+                        } else {
+                            " (already installed)"
+                        }
+                    );
+                })
+            } else {
+                install_cmd(command, force)
+            }
+        }
+        Some(Cmd::Uninstall { subagents }) => (if subagents {
+            install::uninstall_subagents()
+        } else {
+            install::uninstall()
+        })
+        .map(|changed| {
             if changed {
                 println!("Removed cc-statusline from settings.json; restart Claude Code to apply.");
             } else {
-                println!("statusLine.command is not cc-statusline; nothing to do.");
+                println!("The selected status line is not cc-statusline; nothing to do.");
             }
         }),
+        Some(Cmd::Subagents) => {
+            let bytes = payload::read_bytes(Duration::from_millis(150));
+            for row in subagent::render_rows(&bytes, &load_config(cli.theme.as_deref()), cli.width)
+            {
+                println!("{row}");
+            }
+            Ok(())
+        }
         Some(Cmd::Init { force }) => init(cli.theme.as_deref(), force),
         Some(Cmd::Themes) => {
             for name in themes::list() {

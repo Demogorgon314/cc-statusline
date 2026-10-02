@@ -1326,12 +1326,12 @@ fn segment_help(id: SegmentId) -> &'static str {
         SegmentId::OutputStyle => "Current Claude Code output style.",
         SegmentId::Directory => "Working directory; depth: path segments kept.",
         SegmentId::Git => "Branch, diff stats, ahead/behind; pr: open PR via gh.",
-        SegmentId::Context => "Context window fill, colored by pressure.",
+        SegmentId::Context => "Main conversation context window fill, colored by pressure. Subagents have separate context windows.",
         SegmentId::Usage => "Whole-session input ↑, output ↓ and cache hit rate.",
-        SegmentId::Subagent => "Usage of the heaviest sub-agent model.",
+        SegmentId::Subagent => "Cumulative subagent usage grouped by model, including finished tasks. Shows the two largest models by input, plus a count of the rest; compact mode shows one.",
         SegmentId::Session => "Time since the session was created.",
         SegmentId::Changes => "Lines added and removed during this session.",
-        SegmentId::Tps => "Approximate output tokens per second of API time, including first-token wait and retries. Uses deduplicated transcript output deltas, including visible subagents. Needs two complete samples; idle readings dim after stale_secs. This is not decode speed or parallel wall-clock throughput.",
+        SegmentId::Tps => "Recent session output per wall-clock second over a 30-second window, including parallel subagents and waiting time. Needs a baseline and at least one second of observation. Historical logs are excluded; partial reads retain a dimmed previous estimate. Idle output decays to zero; stale_secs controls dimming. Log batching makes this approximate, not model decode speed.",
         SegmentId::Quota => {
             "5h / 7d quota from Claude Code; optional OAuth fallback for older clients."
         }

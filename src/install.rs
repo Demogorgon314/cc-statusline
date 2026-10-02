@@ -1,4 +1,4 @@
-//! Install only statusLine in Claude settings, preserving all other JSON keys.
+//! Install the selected status line hook, preserving all other JSON keys.
 use crate::paths;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -11,8 +11,12 @@ pub struct Outcome {
 fn settings_path() -> PathBuf {
     paths::claude_home().join("settings.json")
 }
-fn receipt_path() -> PathBuf {
-    crate::config::config_dir().join("installed-command.json")
+fn receipt_path(hook: &str) -> PathBuf {
+    crate::config::config_dir().join(if hook == "subagentStatusLine" {
+        "installed-subagent-command.json"
+    } else {
+        "installed-command.json"
+    })
 }
 
 fn load() -> Result<(Value, Option<Vec<u8>>), String> {
@@ -40,8 +44,8 @@ fn save(doc: &Value, old: Option<&[u8]>) -> Result<(), String> {
     paths::write_atomic(&path, &data).map_err(|e| e.to_string())
 }
 
-fn is_ours(cmd: &str) -> bool {
-    if std::fs::read(receipt_path())
+fn is_ours(cmd: &str, hook: &str) -> bool {
+    if std::fs::read(receipt_path(hook))
         .ok()
         .and_then(|b| serde_json::from_slice::<String>(&b).ok())
         .as_deref()
@@ -49,7 +53,14 @@ fn is_ours(cmd: &str) -> bool {
     {
         return true;
     }
-    matches!(cmd, "cc-statusline" | "cc-statusline.exe")
+    if hook == "subagentStatusLine" {
+        matches!(
+            cmd,
+            "cc-statusline subagents" | "cc-statusline.exe subagents"
+        )
+    } else {
+        matches!(cmd, "cc-statusline" | "cc-statusline.exe")
+    }
 }
 
 fn quote_command(exe: &str) -> String {
@@ -58,38 +69,72 @@ fn quote_command(exe: &str) -> String {
 }
 
 pub fn install(command: Option<String>, force: bool) -> Result<Outcome, String> {
+    install_hook("statusLine", command, force)
+}
+
+pub fn install_subagents(command: Option<String>, force: bool) -> Result<Outcome, String> {
+    install_hook("subagentStatusLine", command, force)
+}
+
+fn install_hook(hook: &str, command: Option<String>, force: bool) -> Result<Outcome, String> {
     let command = match command {
         Some(c) if !c.trim().is_empty() => c,
         Some(_) => return Err("The status line command cannot be empty".into()),
-        None => quote_command(
-            &std::env::current_exe()
-                .map_err(|e| e.to_string())?
-                .to_string_lossy(),
-        ),
+        None => {
+            quote_command(
+                &std::env::current_exe()
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy(),
+            ) + if hook == "subagentStatusLine" {
+                " subagents"
+            } else {
+                ""
+            }
+        }
     };
     let (mut doc, old) = load()?;
-    if let Some(existing) = doc.get("statusLine").filter(|v| !v.is_null()) {
+    if let Some(existing) = doc.get(hook).filter(|v| !v.is_null()) {
         let existing_command = existing.get("command").and_then(Value::as_str);
         if existing_command == Some(&command)
             && existing.get("type").and_then(Value::as_str) == Some("command")
+            && (hook != "statusLine" || existing.get("refreshInterval").is_some())
         {
-            paths::write_atomic(&receipt_path(), &serde_json::to_vec(&command).unwrap())
+            paths::write_atomic(&receipt_path(hook), &serde_json::to_vec(&command).unwrap())
                 .map_err(|e| e.to_string())?;
             return Ok(Outcome {
                 changed: false,
                 command,
             });
         }
-        if !force && !existing_command.is_some_and(is_ours) {
-            return Err(
-                "settings.json already has another statusLine; use install --force to replace it"
-                    .into(),
-            );
+        if !force
+            && existing_command != Some(&command)
+            && !existing_command.is_some_and(|cmd| is_ours(cmd, hook))
+        {
+            return Err(format!(
+                "settings.json already has another {hook}; use install {}--force to replace it",
+                if hook == "subagentStatusLine" {
+                    "--subagents "
+                } else {
+                    ""
+                }
+            ));
         }
     }
-    doc["statusLine"] = json!({"type":"command","command":command,"padding":0});
+    let mut settings = doc
+        .get(hook)
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    settings["type"] = json!("command");
+    settings["command"] = json!(command);
+    if hook == "statusLine" {
+        let object = settings.as_object_mut().unwrap();
+        object.entry("padding").or_insert(json!(0));
+        object.entry("refreshInterval").or_insert(json!(1));
+    }
+    doc[hook] = settings;
     save(&doc, old.as_deref())?;
-    paths::write_atomic(&receipt_path(), &serde_json::to_vec(&command).unwrap())
+    paths::write_atomic(&receipt_path(hook), &serde_json::to_vec(&command).unwrap())
         .map_err(|e| e.to_string())?;
     Ok(Outcome {
         changed: true,
@@ -98,17 +143,26 @@ pub fn install(command: Option<String>, force: bool) -> Result<Outcome, String> 
 }
 
 pub fn uninstall() -> Result<bool, String> {
+    uninstall_hook("statusLine")
+}
+
+pub fn uninstall_subagents() -> Result<bool, String> {
+    uninstall_hook("subagentStatusLine")
+}
+
+fn uninstall_hook(hook: &str) -> Result<bool, String> {
     let (mut doc, old) = load()?;
     if !doc
-        .pointer("/statusLine/command")
+        .get(hook)
+        .and_then(|value| value.get("command"))
         .and_then(Value::as_str)
-        .is_some_and(is_ours)
+        .is_some_and(|cmd| is_ours(cmd, hook))
     {
         return Ok(false);
     }
-    doc.as_object_mut().unwrap().remove("statusLine");
+    doc.as_object_mut().unwrap().remove(hook);
     save(&doc, old.as_deref())?;
-    let _ = std::fs::remove_file(receipt_path());
+    let _ = std::fs::remove_file(receipt_path(hook));
     Ok(true)
 }
 

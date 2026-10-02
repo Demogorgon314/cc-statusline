@@ -105,31 +105,37 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 | `output_style` | 输出风格（默认关闭） |
 | `directory` | 工作目录 |
 | `git` | 分支、改动统计、冲突、ahead/behind、打开的 PR（回退查询需要 `gh`） |
-| `context` | 上下文占用百分比和输入 token / 容量 |
+| `context` | 主会话上下文占用百分比和输入 token / 容量 |
 | `usage` | 整个会话的输入 ↑ / 输出 ↓ / 缓存命中率，包含子 agent |
-| `subagent` | 同上，针对输入用量最多的子 agent 模型 |
+| `subagent` | 子任务累计用量：输入最多的两个模型，其余显示 `+N` |
 | `session` | 累计会话时长（默认关闭） |
 | `quota` | 5h / 7d 额度、可选的网关消费上限和重置时间 |
 | `changes` | 会话新增 / 删除行数（默认关闭） |
-| `tps` | 估算 API 输出速度：`≈42 tok/s`（紧凑模式为 `≈42 t/s`） |
+| `tps` | 近期会话输出 / 墙钟秒：`≈42 tok/s`（紧凑模式为 `≈42 t/s`） |
 
 空间不够时按这个顺序去掉：session → tps → changes → git → directory → subagent → output_style → cost → context → quota → mode。
 
-上下文 token 统计输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
+“主上下文”统计主会话的输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。各子任务拥有独立上下文，不累加到这个百分比。“子任务”段按模型汇总累计用量，包含已完成任务；紧凑模式只显示输入最多的一个模型和其余模型数量。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重；不完整的用量以 `≈` 标记并变暗。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
 
 预览和配置器使用当前目录最近收到的状态栏数据。`preview --session ID` 只接受匹配的缓存会话。还没有数据时，预览显示通用 Claude 标签，配置器会为缺失字段补上演示值。
 
 **TPS 怎么计算**
 
 ```text
-去重后的 transcript 输出 token 增量 × 1000 / cost.total_api_duration_ms 增量
+最近 30 秒观察到的去重输出 token 增量 / 窗口实际经过的秒数
 ```
 
-包含可见子 agent 的输出。API 时间包含首 token 等待和重试；并行请求各自的耗时会累加。因此它是按 API 请求时间折算的吞吐估算，不是纯解码速度或并行时的实际墙钟吞吐。日志和计时可能分别更新，部分 API 调用也可能不在 transcript 中。
+主会话与可见的并行子任务一起统计，包含窗口内的等待时间。这替代旧版按 API 时间折算的估算，因为 transcript 和 API 计时分别更新，无法可靠配对。API 计时字段和模型切换不再影响 TPS。日志可能集中落盘，因此它是观察到的输出吞吐，不是模型解码速度。使用一秒粒度的桶维护固定 30 秒窗口；启动阶段用已观察时长作为分母，至少观察一秒才显示数值。
 
-第一次完整采样建立基线，两项计数都增长后才显示速度。空闲刷新保留上一次估算。计时缺失、日志不完整或历史记录尚未追完、模型变化、计数回退、日志被替换、子 agent 文件集合变化，或采样间隔超过 30 分钟时，都需要重新建立基线。预览不会推进采样器。
+每个日志分别建立基线。发现或替换日志时已有的内容，以及追赶中的大段积压，只计入累计用量，不计入近期速度；因此晚发现的非空子任务日志，其首批输出会被保守排除。新增空日志不会重置整个会话。半行日志或暂时不可读时保留上次可信结果并变暗，其他日志继续采集。预览只读已保存的快照，不推进游标。扫描在时间预算内轮转，会话文件锁防止并发刷新互相覆盖。时钟回退或采样间隔超过 30 分钟时建立新窗口。
 
-新配置默认开启 TPS；已有配置请在 `cc-statusline config` 中开启 **TPS**。默认五分钟没有新采样后变暗，相关选项见下方。
+新配置默认开启 TPS；已有配置请在 `cc-statusline config` 中开启 **TPS**。空闲时输出逐渐离开窗口，速度降到零，默认五分钟没有新输出后变暗。`install` 会在缺失时添加 `statusLine.refreshInterval: 1`，让主任务等待期间也能刷新后台子任务输出和空闲衰减；保留用户明确设置的刷新间隔。已有安装可重新执行 `cc-statusline install`，或手动补上该字段。升级时忽略旧版 TPS 缓存。
+
+**逐 agent 上下文**
+
+执行 `cc-statusline install --subagents` 安装独立的子任务面板渲染器。保留主状态栏；遇到其他渲染器时，只有显式传入 `--force` 才会替换。`cc-statusline uninstall --subagents` 仅移除此 hook。构建程序或单独运行渲染器不会修改设置。
+
+该 hook 调用 `cc-statusline subagents`，接收 Claude 的 `tasks` 数组，逐行输出 JSON，展示各任务名称、模型、状态和独立上下文占比。缺少上下文字段时显示 `上下文 ?`，不会误报为零。行宽遵循输入的 `columns`，可用 `--width` 覆盖。上下文字段需要 Claude Code v2.1.205 或更新版本，详见[官方协议](https://code.claude.com/docs/en/statusline#subagent-status-lines)。
 
 </details>
 
@@ -160,7 +166,7 @@ enabled = true
 options = { stale_secs = 300, hide_when_stale = false }
 ```
 
-段按配置顺序显示，未列出的段会追加但保持关闭。用 `cc-statusline init` 生成完整的初始配置。TPS 设置 `hide_when_stale = true` 可隐藏过时估算；`stale_secs = 0` 可关闭变暗。
+段按配置顺序显示，未列出的段会追加但保持关闭。用 `cc-statusline init` 生成完整的初始配置。TPS 设置 `hide_when_stale = true` 可隐藏过时或不完整的估算；`stale_secs = 0` 可关闭按时间变暗，但不完整数据仍会变暗。
 
 颜色支持配色名（`primary`、`accent`、`text_dim`、`success`、`warning`、`error` 等）、`"#rrggbb"`、`{ c16 = 14 }`、`{ c256 = 208 }` 或 `{ r = 1, g = 2, b = 3 }`。自定义配色放在 `palettes/<name>.json`，包含 `base`（`dark` / `light`）和 `colors` 对象，颜色键使用 `textDim` 等 camelCase 名称。
 

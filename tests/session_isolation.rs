@@ -63,138 +63,6 @@ fn message(session: &str, id: &str, output: u64) -> String {
     )
 }
 
-fn append(path: &std::path::Path, text: &str) {
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(path)
-        .unwrap()
-        .write_all(text.as_bytes())
-        .unwrap();
-}
-
-#[test]
-fn tps_can_measure_the_first_request_after_an_empty_transcript() {
-    let f = Fixture::new(&["tps"]);
-    let path = f.transcript("new");
-    std::fs::write(&path, "").unwrap();
-    let mut p = json!({"session_id":"new","transcript_path":path,
-        "cost":{"total_api_duration_ms":0}});
-    assert_eq!(f.text(&[], &p), "");
-    append(&path, &message("new", "first", 420));
-    p["cost"]["total_api_duration_ms"] = json!(10000);
-    assert_eq!(f.text(&[], &p), "≈42 tok/s");
-}
-
-#[test]
-fn tps_uses_session_deltas_including_deduplicated_subagents() {
-    let f = Fixture::new(&["tps"]);
-    let path = f.transcript("one");
-    std::fs::write(&path, message("one", "main-1", 100)).unwrap();
-    let agents = path.with_extension("").join("subagents");
-    std::fs::create_dir_all(&agents).unwrap();
-    let agent = agents.join("agent-a.jsonl");
-    std::fs::write(
-        &agent,
-        message("one", "main-1", 100) + &message("one", "sub-1", 50),
-    )
-    .unwrap();
-    let mut p = json!({"session_id":"one","transcript_path":path,"cwd":"/work/tps",
-        "model":{"display_name":"Opus"},
-        "cost":{"total_api_duration_ms":1000},
-        "context_window":{"total_output_tokens":999999}});
-    assert_eq!(
-        f.text(&[], &p),
-        "",
-        "first complete observation is a baseline"
-    );
-    append(&path, &message("one", "main-2", 220));
-    append(&agent, &message("one", "sub-2", 200));
-    assert_eq!(
-        f.text(&[], &p),
-        "",
-        "wait for the matching API-time increment"
-    );
-    p["cost"]["total_api_duration_ms"] = json!(11000);
-    assert_eq!(f.text(&[], &p), "≈42 tok/s");
-    append(&path, &message("one", "main-2", 220));
-    assert_eq!(
-        f.text(&[], &p),
-        "≈42 tok/s",
-        "duplicate records and idle keep the last sample"
-    );
-    assert_eq!(
-        f.text(&["preview", "--cwd", "/work/tps"], &json!({})),
-        "≈42 tok/s"
-    );
-
-    let other = json!({"session_id":"other","transcript_path":f.transcript("other"),
-        "cost":{"total_api_duration_ms":5000}});
-    assert_eq!(
-        f.text(&[], &other),
-        "",
-        "new sessions cannot inherit a cached speed"
-    );
-    p["cost"]["total_api_duration_ms"] = json!(100);
-    assert_eq!(f.text(&[], &p), "", "a resumed/reset timer rebaselines");
-    append(&path, &message("one", "main-3", 100));
-    p["cost"]["total_api_duration_ms"] = json!(2100);
-    assert_eq!(f.text(&[], &p), "≈50 tok/s");
-
-    p["cost"] = json!({});
-    assert_eq!(
-        f.text(&[], &p),
-        "",
-        "missing timing data hides the estimate"
-    );
-    p["cost"]["total_api_duration_ms"] = json!(2100);
-    assert_eq!(f.text(&[], &p), "", "restored timing starts a new baseline");
-}
-
-#[test]
-fn tps_rebaselines_after_partial_records_and_historical_catchup() {
-    let f = Fixture::new(&["tps"]);
-    let path = f.transcript("one");
-    std::fs::write(&path, message("one", "m1", 100)).unwrap();
-    let mut p =
-        json!({"session_id":"one","transcript_path":path,"cost":{"total_api_duration_ms":1000}});
-    assert_eq!(f.text(&[], &p), "");
-    let next = message("one", "m2", 420);
-    append(&path, next.trim_end());
-    p["cost"]["total_api_duration_ms"] = json!(11000);
-    assert_eq!(
-        f.text(&[], &p),
-        "",
-        "partially written transcripts are not synchronized samples"
-    );
-    append(&path, "\n");
-    assert_eq!(f.text(&[], &p), "", "EOF catch-up establishes a baseline");
-    append(&path, &message("one", "m3", 420));
-    p["cost"]["total_api_duration_ms"] = json!(21000);
-    assert_eq!(f.text(&[], &p), "≈42 tok/s");
-
-    let oversized = format!(
-        "{{\"type\":\"user\",\"content\":\"{}\"}}\n",
-        "x".repeat(4 * 1024 * 1024)
-    );
-    append(&path, &oversized);
-    append(&path, &message("one", "m4", 9000));
-    p["cost"]["total_api_duration_ms"] = json!(22000);
-    for _ in 0..5 {
-        assert_eq!(
-            f.text(&[], &p),
-            "",
-            "historical catch-up cannot become a TPS spike"
-        );
-    }
-    append(&path, &message("one", "m5", 100));
-    p["cost"]["total_api_duration_ms"] = json!(24000);
-    assert_eq!(f.text(&[], &p), "≈50 tok/s");
-
-    // Even a replacement with a higher token total must not be treated as new output.
-    std::fs::write(&path, message("one", "replacement", 50000)).unwrap();
-    p["cost"]["total_api_duration_ms"] = json!(25000);
-    assert_eq!(f.text(&[], &p), "");
-}
 #[test]
 fn session_isolation_resume_and_preview() {
     let f = Fixture::new(&["usage", "subagent"]);
@@ -265,6 +133,130 @@ fn subagents_are_scoped_to_parent_transcript() {
         text.contains("↓ 300") && text.contains("Sonnet ↑ 1.0k") && !text.contains("999"),
         "{text}"
     );
+}
+
+#[test]
+fn subagent_rows_keep_individual_context_and_fit_the_panel() {
+    let f = Fixture::new(&[]);
+    let input = json!({"columns":120,"tasks":[
+        {"id":"a","name":"Search\n\u{001b}","model":"claude-sonnet-4-6","status":"running","tokenCount":180000,"contextWindowSize":200000},
+        {"id":"b","name":"测试","model":"claude-opus-4-6","status":"completed","tokenCount":20000,"contextWindowSize":1000000},
+        {"id":"c","name":"Unresolved","status":"pending","tokenCount":0},
+        {"name":"missing id"}
+    ]});
+    let rows: Vec<Value> = f
+        .text(&["subagents"], &input)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["id"], "a");
+    assert!(rows[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Sonnet 4.6 · running · ctx 90%"));
+    assert!(rows[1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("completed · ctx 2%"));
+    assert!(rows[2]["content"].as_str().unwrap().contains("ctx ?"));
+    std::fs::write(
+        f.0.join("cc-statusline/config.toml"),
+        "[style]\nwidth=200\n",
+    )
+    .unwrap();
+    let mut narrow = input.clone();
+    narrow["columns"] = json!(12);
+    for row in f.text(&["subagents"], &narrow).lines() {
+        let row: Value = serde_json::from_str(row).unwrap();
+        assert!(unicode_width::UnicodeWidthStr::width(row["content"].as_str().unwrap()) <= 12);
+    }
+    for width in [0, 1, 8, 24] {
+        for line in f
+            .text(&["subagents", "--width", &width.to_string()], &input)
+            .lines()
+        {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let content = row["content"].as_str().unwrap();
+            assert!(!content.chars().any(char::is_control));
+            assert!(unicode_width::UnicodeWidthStr::width(content) <= width);
+        }
+    }
+    assert_eq!(f.text(&["subagents"], &json!({"tasks":null})), "");
+}
+
+#[test]
+fn subagent_hook_installation_preserves_the_main_hook_and_other_owners() {
+    let f = Fixture::new(&[]);
+    let path = f.0.join("settings.json");
+    let original = json!({"statusLine":{"type":"command","command":"main-other","refreshInterval":5},
+        "subagentStatusLine":{"type":"command","command":"sub-other"},"env":{"keep":"yes"}});
+    std::fs::write(&path, original.to_string()).unwrap();
+    assert!(!f
+        .run(&["install", "--subagents"], &json!({}))
+        .status
+        .success());
+    f.text(&["uninstall", "--subagents"], &json!({}));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+        original
+    );
+    f.text(&["install", "--subagents", "--force"], &json!({}));
+    let installed: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(installed["statusLine"], original["statusLine"]);
+    assert!(installed["subagentStatusLine"]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" subagents"));
+    f.text(&["uninstall", "--subagents"], &json!({}));
+    let removed: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(removed.get("subagentStatusLine").is_none());
+    assert_eq!(removed["statusLine"], original["statusLine"]);
+    assert_eq!(removed["env"], original["env"]);
+}
+
+#[test]
+fn installation_adds_background_refresh_without_overwriting_user_preferences() {
+    let f = Fixture::new(&[]);
+    let path = f.0.join("settings.json");
+    std::fs::write(
+        &path,
+        json!({"statusLine":{"type":"command","command":"cc-statusline","padding":3}}).to_string(),
+    )
+    .unwrap();
+    f.text(&["install", "--command", "cc-statusline"], &json!({}));
+    let mut installed: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(installed["statusLine"]["refreshInterval"], 1);
+    assert_eq!(installed["statusLine"]["padding"], 3);
+    installed["statusLine"]["refreshInterval"] = json!(5);
+    std::fs::write(&path, installed.to_string()).unwrap();
+    f.text(&["install", "--command", "cc-statusline"], &json!({}));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+        installed
+    );
+}
+
+#[test]
+fn model_summary_is_ranked_and_main_context_is_independent() {
+    let f = Fixture::new(&["context", "subagent"]);
+    let path = f.transcript("one");
+    std::fs::write(&path, "").unwrap();
+    let dir = path.with_extension("").join("subagents");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (id, model, input) in [
+        ("a", "Sonnet", 300),
+        ("b", "Opus", 200),
+        ("c", "Haiku", 100),
+    ] {
+        let line = json!({"type":"assistant","sessionId":"one","message":{"id":id,"model":model,"usage":{"input_tokens":input,"output_tokens":10}}});
+        std::fs::write(dir.join(format!("agent-{id}.jsonl")), format!("{line}\n")).unwrap();
+    }
+    let p = json!({"session_id":"one","transcript_path":path,"context_window":{"context_window_size":200000,"used_percentage":20,"current_usage":{"input_tokens":40000}}});
+    let text = f.text(&[], &p);
+    assert!(text.contains("main ctx 20% (40.0k/200.0k)"), "{text}");
+    assert!(text.find("Sonnet").unwrap() < text.find("Opus").unwrap());
+    assert!(text.contains("+1") && !text.contains("Haiku"), "{text}");
 }
 #[test]
 fn native_fields_render_without_credentials_or_transcript() {

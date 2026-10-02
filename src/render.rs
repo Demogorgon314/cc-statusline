@@ -219,7 +219,11 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
         SegmentId::Tps => {
             let estimate = ctx.tps?;
             let stale_secs = seg.opt_int("stale_secs", 300);
-            let stale = stale_secs > 0 && ctx.now - estimate.measured_at > stale_secs as f64;
+            let stale = (stale_secs > 0 && ctx.now - estimate.measured_at > stale_secs as f64)
+                || ctx
+                    .stats
+                    .as_ref()
+                    .is_some_and(|s| s.state != crate::session::CollectionState::Complete);
             if stale && seg.opt_bool("hide_when_stale", false) {
                 return None;
             }
@@ -308,9 +312,9 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             } else {
                 "success"
             };
-            let label = if zh { "上下文 " } else { "ctx " };
+            let label = if zh { "主上下文 " } else { "main ctx " };
             let text = if compact || !seg.opt_bool("show_tokens", true) {
-                format!("{pct}%")
+                format!("{}{pct}%", if zh { "主 " } else { "main " })
             } else {
                 format!(
                     "{label}{pct}% ({}/{})",
@@ -335,18 +339,43 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 spans.push(plain(if zh { "总计 " } else { "total " }));
             }
             spans.extend(usage_triple(ctx, seg, &st.total, compact));
+            if st.state != crate::session::CollectionState::Complete {
+                spans.insert(0, plain("≈"));
+                for span in &mut spans {
+                    span.dim = true;
+                }
+            }
             Some(spans)
         }
         SegmentId::Subagent => {
             let st = ctx.stats.as_ref()?;
-            // heaviest sub-agent model by input; the rest stay in the totals
-            let (model, u) = st
+            let mut models: Vec<_> = st
                 .sub_by_model
                 .iter()
                 .filter(|(_, u)| !u.is_empty())
-                .max_by_key(|(_, u)| u.input())?;
-            let mut spans = vec![plain(format!("{} ", ctx.models.display(model)))];
-            spans.extend(usage_triple(ctx, seg, u, compact));
+                .collect();
+            if models.is_empty() {
+                return None;
+            }
+            models.sort_by(|(a, ua), (b, ub)| ub.input().cmp(&ua.input()).then_with(|| a.cmp(b)));
+            let limit = if compact { 1 } else { 2 };
+            let mut spans = vec![plain(if zh { "子任务 " } else { "sub " })];
+            for (i, (model, u)) in models.iter().take(limit).enumerate() {
+                if i > 0 {
+                    spans.push(plain("; "));
+                }
+                spans.push(plain(format!("{} ", ctx.models.display(model))));
+                spans.extend(usage_triple(ctx, seg, u, compact));
+            }
+            if models.len() > limit {
+                spans.push(plain(format!(" +{}", models.len() - limit)));
+            }
+            if st.state != crate::session::CollectionState::Complete {
+                spans.insert(0, plain("≈"));
+                for span in &mut spans {
+                    span.dim = true;
+                }
+            }
             Some(spans)
         }
         SegmentId::Quota => quota_segment(ctx, seg, compact),
@@ -726,7 +755,7 @@ pub fn visible_width(s: &str) -> usize {
     w
 }
 
-fn truncate(s: &str, width: usize, color: bool) -> String {
+pub(crate) fn truncate(s: &str, width: usize, color: bool) -> String {
     let mut out = String::new();
     let mut used = 0;
     let mut i = 0;
@@ -806,6 +835,15 @@ mod tests {
         let compact = render(&ctx, Some(7));
         assert!(compact.contains("≈42 t/s"));
         assert_eq!(visible_width(&compact), 7);
+        ctx.stats = Some(SessionStats {
+            state: crate::session::CollectionState::Partial,
+            ..Default::default()
+        });
+        assert!(
+            is_dim(&render(&ctx, None)),
+            "incomplete input dims even a recent estimate"
+        );
+        ctx.stats = None;
         ctx.now = 500.0;
         ctx.config.segments[0].styles.text_bold = true;
         let idle = render(&ctx, None);

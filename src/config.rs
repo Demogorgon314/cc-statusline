@@ -90,11 +90,11 @@ pub enum SegmentId {
     Directory,
     /// branch, diff stats, ahead/behind, PR badge
     Git,
-    /// context window fill
+    /// main conversation context window fill
     Context,
     /// whole-session input / output / cache hit rate
     Usage,
-    /// heaviest sub-agent model's usage
+    /// cumulative subagent usage, grouped by model
     Subagent,
     /// session wall-clock age
     Session,
@@ -102,7 +102,7 @@ pub enum SegmentId {
     Quota,
     /// Session lines added and removed
     Changes,
-    /// Approximate output throughput over API request time
+    /// Recent session output throughput over wall-clock time
     Tps,
 }
 

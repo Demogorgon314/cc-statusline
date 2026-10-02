@@ -65,7 +65,7 @@ Keep the details of your Claude Code session visible without interrupting your w
 
 - 📊 **Whole-session token usage** across the main agent and visible subagents, plus **cache hit rate**, colored from red to green
 - ⏳ **Five-hour and seven-day quota usage** and reset times (for example, `5h 42% ↻1h20m`)
-- 🧩 **The subagent model with the most input tokens**, alongside Claude's estimated session cost
+- 🧩 **Subagent usage grouped by model**, alongside Claude's estimated session cost
 - 🌿 **Git at a glance**: changed lines, ahead/behind, and clickable `[PR#42]` links
 
 Model and live reasoning effort, context usage, Vim/agent/fast-mode badges, and estimated output throughput fit alongside them. Long model context labels stay compact: `Opus 5.5 [1M]`.
@@ -105,31 +105,37 @@ cc-statusline is a single Rust binary. Work stays bounded as your session grows:
 | `output_style` | Output style (disabled by default) |
 | `directory` | Working directory |
 | `git` | Branch, diff, conflicts, ahead/behind, open PR (fallback lookup needs `gh`) |
-| `context` | Context percentage and input tokens / capacity |
+| `context` | Main conversation context percentage and input tokens / capacity |
 | `usage` | Whole-session input ↑ / output ↓ / cache hit rate, including subagents |
-| `subagent` | Usage of the subagent model with the most input tokens |
+| `subagent` | Cumulative subagent usage: top two models by input, plus `+N` for the rest |
 | `session` | Accumulated session duration (disabled by default) |
 | `quota` | Five-hour / seven-day quota, optional gateway spend limit, reset times |
 | `changes` | Session lines added/removed (disabled by default) |
-| `tps` | Estimated API output throughput: `≈42 tok/s` (compact: `≈42 t/s`) |
+| `tps` | Recent session output per wall-clock second: `≈42 tok/s` (compact: `≈42 t/s`) |
 
 When space runs out, segments drop in this order: session → tps → changes → git → directory → subagent → output_style → cost → context → quota → mode.
 
-Context counts input plus cache reads and writes, excluding output; Claude's native percentage takes precedence. Session totals come from the exact supplied transcript and its adjacent subagent logs, deduplicated by message ID. Missing sessions never inherit another session's statistics. Quota belongs to the account and can persist across sessions.
+`main ctx` counts the main conversation's input plus cache reads and writes, excluding output; Claude's native percentage takes precedence. Subagents have independent contexts and are not added to this percentage. Session totals come from the exact supplied transcript and its adjacent subagent logs, deduplicated by message ID. The `sub` segment includes finished tasks and groups them by model, not by agent; compact mode shows the largest model and a count of the rest. Incomplete totals are marked `≈` and dimmed. Missing sessions never inherit another session's statistics. Quota belongs to the account and can persist across sessions.
 
 Preview and the configurator use the last observed payload for the current directory. `preview --session ID` only accepts a matching cached session. Before one is available, preview shows a generic Claude label; the configurator fills missing values with demo data.
 
 **How TPS works**
 
 ```text
-Δ deduplicated transcript output tokens × 1000 / Δ cost.total_api_duration_ms
+new deduplicated output observed in the last 30 seconds / elapsed window seconds
 ```
 
-This includes visible subagent output. API time includes first-token waits and retries; parallel requests contribute their individual durations. It is an estimate of throughput per second of API request time, rather than pure decode speed or parallel wall-clock throughput. Logs and timers can update separately, and some API calls may not appear in transcripts.
+This measures the main conversation and visible parallel subagents together, including waiting time. It replaces the older API-time-normalized estimate: independent transcript and API timer updates cannot reliably be paired. API timing fields and model changes no longer affect TPS. Logs can arrive in batches, so this is observed output throughput, not model decode speed. Output is grouped into one-second buckets over a fixed 30-second window; during startup the denominator is the observed duration, with a one-second minimum warmup.
 
-The first complete observation establishes a baseline; a value appears after both counters advance. Idle refreshes retain the last estimate. Missing timing, partial logs or historical catch-up, model changes, counter rollback, replaced logs, changed subagent files, or a sampling gap over 30 minutes require a fresh baseline. Preview never advances the sampler.
+Each log gets its own baseline. Contents already present when a file is discovered or replaced, and large backlogs being caught up, contribute to usage totals but not recent throughput. This conservatively excludes the first output of an agent whose nonempty log is discovered late. New empty logs do not reset the session. Partial or unavailable logs retain the previous trustworthy estimate, dimmed, while healthy logs continue collecting. Preview reads the saved snapshot without advancing cursors. Collection rotates through files under a time budget, and a nonblocking session lock prevents overlapping refreshes from overwriting progress. Clock rollback or a sampling gap over 30 minutes starts a fresh window.
 
-New configurations enable TPS. In existing configurations, enable **TPS** in `cc-statusline config`. Estimates dim after five minutes by default; options are shown below.
+New configurations enable TPS. In existing configurations, enable **TPS** in `cc-statusline config`. Idle output leaves the window and the rate falls to zero; after five minutes without new output it dims by default. `install` adds `statusLine.refreshInterval: 1` when absent so background agent output and idle decay refresh even while the main agent waits; an explicitly configured interval is preserved. Re-run `cc-statusline install` for an existing installation, or add that field manually. Old TPS caches are ignored on upgrade.
+
+**Per-agent context rows**
+
+Run `cc-statusline install --subagents` to install the separate agent-panel renderer. It preserves the main status line and refuses to replace another renderer unless `--force` is supplied. `cc-statusline uninstall --subagents` removes only this hook. No settings are changed by merely building or running the renderer.
+
+The hook invokes `cc-statusline subagents`, reads Claude's `tasks` array and prints one JSON row per task with its name, model, status, and individual context percentage. Missing context fields show `ctx ?`, never a fabricated zero. Rows fit the provided `columns` width; `--width` overrides it. Context fields require Claude Code v2.1.205 or later; see the [subagent status line protocol](https://code.claude.com/docs/en/statusline#subagent-status-lines).
 
 </details>
 
@@ -160,7 +166,7 @@ enabled = true
 options = { stale_secs = 300, hide_when_stale = false }
 ```
 
-Segments appear in configuration order; omitted segments are appended disabled. Use `cc-statusline init` for a complete starting point. TPS can hide stale estimates with `hide_when_stale = true`; `stale_secs = 0` disables dimming.
+Segments appear in configuration order; omitted segments are appended disabled. Use `cc-statusline init` for a complete starting point. TPS can hide stale or incomplete estimates with `hide_when_stale = true`; `stale_secs = 0` disables age-based dimming, but incomplete data remains dimmed.
 
 Colors accept palette names (`primary`, `accent`, `text_dim`, `success`, `warning`, `error`), `"#rrggbb"`, `{ c16 = 14 }`, `{ c256 = 208 }`, or `{ r = 1, g = 2, b = 3 }`. Custom palettes live in `palettes/<name>.json`, with a `base` (`dark` / `light`) and a `colors` object using camelCase names such as `textDim`.
 

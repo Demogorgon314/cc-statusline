@@ -18,7 +18,6 @@ pub struct Payload {
     pub mode: String,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<u64>,
-    pub api_duration_ms: Option<u64>,
     /// Preview snapshots must not advance the live throughput sampler.
     pub is_preview: bool,
     pub lines_added: u64,
@@ -28,7 +27,7 @@ pub struct Payload {
     pub pr: Option<crate::probe::PullRequest>,
 }
 
-pub fn read_stdin(timeout: Duration) -> Payload {
+pub fn read_bytes(timeout: Duration) -> Vec<u8> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
@@ -38,21 +37,22 @@ pub fn read_stdin(timeout: Duration) -> Payload {
             .read_to_end(&mut buf);
         let _ = tx.send(buf);
     });
-    rx.recv_timeout(timeout)
-        .map(|buf| {
-            let payload = parse(&buf);
-            if !payload.cwd.is_empty() && !payload.session_id.is_empty() {
-                let cache = crate::paths::cache_dir().join(format!(
-                    "preview-{}.json",
-                    crate::paths::short_hash(&payload.cwd)
-                ));
-                if std::fs::read(&cache).ok().as_deref() != Some(&buf[..]) {
-                    let _ = crate::paths::write_atomic(&cache, &buf);
-                }
-            }
-            payload
-        })
-        .unwrap_or_default()
+    rx.recv_timeout(timeout).unwrap_or_default()
+}
+
+pub fn read_stdin(timeout: Duration) -> Payload {
+    let buf = read_bytes(timeout);
+    let payload = parse(&buf);
+    if !payload.cwd.is_empty() && !payload.session_id.is_empty() {
+        let cache = crate::paths::cache_dir().join(format!(
+            "preview-{}.json",
+            crate::paths::short_hash(&payload.cwd)
+        ));
+        if std::fs::read(&cache).ok().as_deref() != Some(&buf[..]) {
+            let _ = crate::paths::write_atomic(&cache, &buf);
+        }
+    }
+    payload
 }
 
 /// Strip terminal controls from external labels; only the renderer emits ANSI.
@@ -128,9 +128,6 @@ pub fn parse(buf: &[u8]) -> Payload {
             .and_then(Value::as_f64)
             .filter(|v| *v >= 0.0),
         duration_ms: v.pointer("/cost/total_duration_ms").and_then(Value::as_u64),
-        api_duration_ms: v
-            .pointer("/cost/total_api_duration_ms")
-            .and_then(Value::as_u64),
         is_preview: false,
         lines_added: n("/cost/total_lines_added"),
         lines_removed: n("/cost/total_lines_removed"),

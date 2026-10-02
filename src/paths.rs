@@ -94,6 +94,11 @@ pub fn sweep_cache() {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
+        // Removing a locked inode would let a second process lock a new file
+        // at the same path while the first still owns the old inode.
+        if name.ends_with(".lock") {
+            continue;
+        }
         let max_age = if name.ends_with(".tmp") {
             // orphaned by a write_atomic killed between create and rename
             3600

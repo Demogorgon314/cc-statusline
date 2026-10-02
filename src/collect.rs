@@ -22,7 +22,7 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
         || wants(SegmentId::Session)
         || wants(SegmentId::Tps)
     {
-        session::collect(&payload.transcript_path, &payload.session_id, deadline)
+        session::collect(&payload, deadline, now)
     } else {
         None
     };
@@ -69,9 +69,7 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
         None
     };
     let effort = payload.effort.clone();
-    let tps = wants(SegmentId::Tps)
-        .then(|| crate::tps::get(&payload, stats.as_ref(), now))
-        .flatten();
+    let tps = stats.as_ref().and_then(|stats| stats.tps);
     Ctx {
         payload,
         config,
