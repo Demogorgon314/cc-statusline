@@ -127,7 +127,10 @@ def demo_env(home):
     return env
 
 
-def render(home, theme, width):
+def render(home, theme, width, light=False):
+    # Colors follow Claude Code's theme setting, as on a real light terminal.
+    with open(os.path.join(home, "settings.json"), "w") as f:
+        json.dump({"theme": "light" if light else "dark"}, f)
     out = subprocess.run([BIN, "-t", theme, "--width", str(width)],
                          input=json.dumps(PAYLOAD), text=True, capture_output=True,
                          env=demo_env(home), check=True)
@@ -252,8 +255,9 @@ def main():
     os.makedirs(ASSETS, exist_ok=True)
     home = setup_home()
     try:
-        hero = ansi_to_html(render(home, "claude", 300), "#e0e0e0")
-        shoot(page(claude_footer(hero), "Claude Code — demo session", minw=1180), "hero.png", 3000)
+        hero = ansi_to_html(render(home, "powerline-light", 200, light=True), "#1a1a1a")
+        shoot(page(claude_footer(hero), "Claude Code — demo session", light=True, minw=1180),
+              "hero.png", 3000)
 
         rows = []
         for theme in ["claude", "cometix", "default", "minimal", "gruvbox", "nord", "powerline-dark",
