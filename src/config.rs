@@ -29,7 +29,6 @@ pub struct StyleConfig {
     pub separator: String,
     /// Color of the separator (powerline arrows take the segment colors).
     pub separator_color: Option<AnsiColor>,
-    pub lang: Lang,
     /// Palette for token colors: empty or dark, light, or a custom palette name.
     pub palette: String,
     /// Fixed render width; 0 detects the terminal.
@@ -42,7 +41,6 @@ impl Default for StyleConfig {
             mode: StyleMode::Plain,
             separator: "  ".into(),
             separator_color: None,
-            lang: Lang::En,
             palette: String::new(),
             width: 0,
         }
@@ -67,13 +65,6 @@ impl StyleMode {
             StyleMode::Powerline => "powerline",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Lang {
-    En,
-    Zh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

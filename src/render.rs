@@ -8,7 +8,7 @@
 //! would leave the rest of the line in the terminal's default foreground.
 
 use crate::appearance::{Models, Palette, Rgb};
-use crate::config::{AnsiColor, Config, Lang, SegmentConfig, SegmentId, StyleMode};
+use crate::config::{AnsiColor, Config, SegmentConfig, SegmentId, StyleMode};
 use crate::payload::Payload;
 use crate::probe::{GitStatus, PullRequest};
 use crate::session::{SessionStats, Usage};
@@ -73,10 +73,6 @@ fn rgb(Rgb(r, g, b): Rgb) -> AnsiColor {
 }
 
 impl Ctx {
-    fn zh(&self) -> bool {
-        self.config.style.lang == Lang::Zh
-    }
-
     fn sgr(&self, color: &AnsiColor, bg: bool) -> Option<String> {
         self.color.then(|| color.sgr(&self.palette, bg)).flatten()
     }
@@ -221,7 +217,6 @@ fn hyperlink(text: &str, url: &str) -> String {
 /// trims labels and units for narrow terminals.
 fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
     let p = &ctx.payload;
-    let zh = ctx.zh();
     match seg.id {
         SegmentId::Mode => (!p.mode.is_empty()).then(|| vec![plain(&p.mode)]),
         SegmentId::Cost => p.cost_usd.map(|cost| vec![plain(format!("${cost:.2}"))]),
@@ -345,7 +340,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 "success"
             };
             let color = seg.opt_bool("colorful", true).then(|| token(tok));
-            let mut spans = vec![plain(if zh { "上下文 " } else { "ctx " })];
+            let mut spans = vec![plain("ctx ")];
             if seg.opt_bool("bar", false) && !compact {
                 spans.push(meter(ratio, color.clone()));
             }
@@ -374,9 +369,9 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             }
             let mut spans = Vec::new();
             if !compact {
-                spans.push(plain(if zh { "总计 " } else { "total " }));
+                spans.push(plain("total "));
             }
-            spans.extend(usage_triple(ctx, seg, &st.total, compact));
+            spans.extend(usage_triple(seg, &st.total, compact));
             if st.state != crate::session::CollectionState::Complete {
                 spans.insert(0, plain("≈"));
                 for span in &mut spans {
@@ -396,14 +391,14 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                 return None;
             }
             models.sort_by(|(a, ua), (b, ub)| ub.input().cmp(&ua.input()).then_with(|| a.cmp(b)));
-            let mut spans = vec![plain(if zh { "子任务 " } else { "sub " })];
+            let mut spans = vec![plain("sub ")];
             if compact {
                 // Narrow lines keep the subagent total rather than one model.
                 let mut total = Usage::default();
                 for (_, u) in &models {
                     total.add(u);
                 }
-                spans.extend(usage_triple(ctx, seg, &total, compact));
+                spans.extend(usage_triple(seg, &total, compact));
             } else {
                 const LIMIT: usize = 2;
                 for (i, (model, u)) in models.iter().take(LIMIT).enumerate() {
@@ -411,15 +406,15 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                         spans.push(plain("; "));
                     }
                     spans.push(plain(format!("{} ", ctx.models.display(model))));
-                    spans.extend(usage_triple(ctx, seg, u, compact));
+                    spans.extend(usage_triple(seg, u, compact));
                 }
                 let more = models.len().saturating_sub(LIMIT);
                 if more > 0 {
                     spans.push(colored(
-                        match (zh, more) {
-                            (true, _) => format!(" +{more} 个模型"),
-                            (false, 1) => " +1 model".into(),
-                            (false, _) => format!(" +{more} models"),
+                        if more == 1 {
+                            " +1 model".into()
+                        } else {
+                            format!(" +{more} models")
                         },
                         token("text_muted"),
                     ));
@@ -444,7 +439,7 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
     }
 }
 
-fn usage_triple(ctx: &Ctx, seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec<Span> {
+fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec<Span> {
     let colorful = seg.opt_bool("colorful", true);
     let pick = |c: AnsiColor| colorful.then_some(c);
     let mut spans = vec![
@@ -472,11 +467,7 @@ fn usage_triple(ctx: &Ctx, seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec
     ];
     if seg.opt_bool("show_cache", true) {
         if let Some(r) = u.cache_rate() {
-            let label = match (compact, ctx.zh()) {
-                (true, _) => " ",
-                (false, true) => " 缓存 ",
-                (false, false) => " cache ",
-            };
+            let label = if compact { " " } else { " cache " };
             spans.push(Span {
                 text: format!("{label}{}", fmt_rate(r)),
                 color: pick(rgb(cache_color(r))),
@@ -493,15 +484,10 @@ fn usage_triple(ctx: &Ctx, seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec
 /// out as a local weekday + time.
 fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
     let q = ctx.quota.as_ref()?;
-    let zh = ctx.zh();
     let windows = [
         ("5h", q.limit_5h.as_ref(), seg.opt_bool("show_5h", true)),
         ("7d", q.limit_7d.as_ref(), seg.opt_bool("show_7d", true)),
-        (
-            if zh { "限额" } else { "spend" },
-            q.spend.as_ref(),
-            seg.opt_bool("show_spend", true),
-        ),
+        ("spend", q.spend.as_ref(), seg.opt_bool("show_spend", true)),
     ];
     let colorful = seg.opt_bool("colorful", true);
     // reset times survive compaction: they are what the segment is for
@@ -540,7 +526,7 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
             if let Some(reset) = e
                 .reset_at
                 .as_deref()
-                .and_then(|r| fmt_reset(r, ctx.now, zh, compact))
+                .and_then(|r| fmt_reset(r, ctx.now, compact))
             {
                 spans.push(plain(format!(" ↻{reset}")));
             }
@@ -549,12 +535,12 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
     (!spans.is_empty()).then_some(spans)
 }
 
-fn fmt_reset(rfc3339: &str, now: f64, zh: bool, compact: bool) -> Option<String> {
+fn fmt_reset(rfc3339: &str, now: f64, compact: bool) -> Option<String> {
     use chrono::{DateTime, Local};
     let at = DateTime::parse_from_rfc3339(rfc3339).ok()?;
     let secs = at.timestamp() as f64 - now;
     if secs <= 0.0 {
-        return Some(if zh { "即将" } else { "now" }.into());
+        return Some("now".into());
     }
     if secs < 86_400.0 {
         let m = (secs / 60.0).ceil() as u64;
@@ -568,18 +554,7 @@ fn fmt_reset(rfc3339: &str, now: f64, zh: bool, compact: bool) -> Option<String>
         // "3d", "6d": the day count is enough when space is short
         return Some(format!("{}d", (secs / 86_400.0).round() as u64));
     }
-    let local = at.with_timezone(&Local);
-    Some(if zh {
-        const DAYS: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-        use chrono::Datelike;
-        format!(
-            "{} {}",
-            DAYS[local.weekday().num_days_from_monday() as usize],
-            local.format("%H:%M")
-        )
-    } else {
-        local.format("%a %H:%M").to_string()
-    })
+    Some(at.with_timezone(&Local).format("%a %H:%M").to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,23 +1008,20 @@ mod tests {
             .unwrap()
             .timestamp() as f64;
         assert_eq!(
-            fmt_reset("2026-09-11T18:00:00Z", now, false, false).unwrap(),
+            fmt_reset("2026-09-11T18:00:00Z", now, false).unwrap(),
             "2h00m"
         );
         assert_eq!(
-            fmt_reset("2026-09-11T16:30:00Z", now, false, false).unwrap(),
+            fmt_reset("2026-09-11T16:30:00Z", now, false).unwrap(),
             "30m"
         );
         assert_eq!(
-            fmt_reset("2026-09-11T15:00:00Z", now, false, false).unwrap(),
+            fmt_reset("2026-09-11T15:00:00Z", now, false).unwrap(),
             "now"
         );
-        assert!(fmt_reset("2026-09-15T00:00:00Z", now, false, false)
+        assert!(fmt_reset("2026-09-15T00:00:00Z", now, false)
             .unwrap()
             .contains(':'));
-        assert_eq!(
-            fmt_reset("2026-09-15T00:00:00Z", now, false, true).unwrap(),
-            "3d"
-        );
+        assert_eq!(fmt_reset("2026-09-15T00:00:00Z", now, true).unwrap(), "3d");
     }
 }

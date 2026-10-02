@@ -3,7 +3,7 @@
 //! Rows degrade by dropping fields, never by cutting the context share off.
 use crate::{
     appearance::{self, Models, Palette},
-    config::{AnsiColor, Config, Lang},
+    config::{AnsiColor, Config},
     payload::{self, Payload},
     render, session, tps,
 };
@@ -25,7 +25,6 @@ struct Row {
 struct Style {
     palette: Palette,
     color: bool,
-    zh: bool,
     now: f64,
 }
 
@@ -70,7 +69,7 @@ impl Row {
     /// field; the name is cut only in the last layout.
     fn layouts(&self, s: &Style) -> Vec<String> {
         let sep = s.paint(" · ", "text_muted", false);
-        let label = if s.zh { "上下文 " } else { "ctx " };
+        let label = "ctx ";
         let tps = self.tps.filter(|_| self.running).map(|e| {
             let idle = s.now - e.measured_at > 60.0;
             s.paint(&format!("≈{:.0} t/s", e.tokens_per_sec), "accent", idle)
@@ -176,7 +175,6 @@ pub fn render_rows(bytes: &[u8], config: &Config, width: Option<usize>) -> Vec<S
         ),
         color: std::env::var_os("CC_STATUSLINE_NO_COLOR").is_none()
             && std::env::var_os("NO_COLOR").is_none(),
-        zh: config.style.lang == Lang::Zh,
         now,
     };
     let rows: Vec<(&str, Row)> = tasks

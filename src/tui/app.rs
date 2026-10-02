@@ -5,7 +5,7 @@ use super::pickers::{
     centered, to_ratatui, Click, ClickMap, ColorPicker, IconPicker, Outcome, SeparatorEditor,
 };
 use super::{button, button_bar, Button, Hits};
-use crate::config::{AnsiColor, Config, Lang, SegmentConfig, SegmentId, StyleMode};
+use crate::config::{AnsiColor, Config, SegmentConfig, SegmentId, StyleMode};
 use crate::quota::{Entry, Quota};
 use crate::render::Ctx;
 use crate::session::{SessionStats, Usage};
@@ -272,7 +272,6 @@ impl App {
 
     fn switch_theme(&mut self, name: &str) {
         let mut cfg = themes::get(name);
-        cfg.style.lang = self.config.style.lang;
         cfg.style.palette = self.config.style.palette.clone();
         // themes never set these; they belong to this install, not the look
         cfg.style.separator_color = self.config.style.separator_color.clone();
@@ -603,12 +602,6 @@ impl App {
                 }
                 self.status = Some(format!("Style mode: {}", self.config.style.mode.name()));
             }
-            KeyCode::Char('l') | KeyCode::Char('L') => {
-                self.config.style.lang = match self.config.style.lang {
-                    Lang::En => Lang::Zh,
-                    Lang::Zh => Lang::En,
-                };
-            }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.config.style.palette = match self.config.style.palette.as_str() {
                     "" => "dark",
@@ -859,16 +852,6 @@ impl App {
         let parts = [
             (format!("mode: {}", self.config.style.mode.name()), 'm'),
             (format!("sep: {:?}", self.config.style.separator), 'e'),
-            (
-                format!(
-                    "lang: {}",
-                    match self.config.style.lang {
-                        Lang::En => "en",
-                        Lang::Zh => "zh",
-                    }
-                ),
-                'l',
-            ),
             (
                 format!(
                     "colors: {}",
@@ -1318,7 +1301,6 @@ fn help_buttons(panel: Panel) -> Vec<Button> {
         button("P", "Next Theme", k('p')),
         button("M", "Style Mode", k('m')),
         button("E", "Separator", k('e')),
-        button("L", "Language", k('l')),
         button("C", "Colors", k('c')),
         button("R", "Reset", k('r')),
         button("S", "Save", k('s')),
@@ -1371,12 +1353,12 @@ const HELP: &str = "\
    click [✓]        show / hide a segment directly
    drag a segment   move it to a new position (live preview)
    wheel            scroll the list under the pointer
-   bottom bar, mode/sep/lang/colors in the preview border are buttons
+   bottom bar, mode/sep/colors in the preview border are buttons
 
  Anywhere
    1-9 / P          pick / cycle theme      R  reset theme
    M                plain → nerd_font → powerline
-   E                separator               L  language en/zh
+   E                separator
    C                colors: default → dark → light
    S                save config.toml        W  write current theme
    Ctrl+S           save as a new theme     Esc quit

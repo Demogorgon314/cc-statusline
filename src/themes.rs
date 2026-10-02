@@ -1,8 +1,8 @@
 //! Built-in themes adapted from kimi-statusline and CCometixLine.
 
 use crate::config::{
-    themes_dir, AnsiColor, ColorConfig, Config, IconConfig, Lang, SegmentConfig, SegmentId,
-    StyleConfig, StyleMode, TextStyleConfig,
+    themes_dir, AnsiColor, ColorConfig, Config, IconConfig, SegmentConfig, SegmentId, StyleConfig,
+    StyleMode, TextStyleConfig,
 };
 use std::collections::BTreeMap;
 
@@ -168,7 +168,6 @@ fn build(
             mode,
             separator: separator.into(),
             separator_color: None,
-            lang: Lang::En,
             palette: String::new(),
             width: 0,
         },
@@ -497,6 +496,12 @@ pub fn list() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configs_with_the_removed_lang_key_still_load() {
+        let cfg: Config = toml::from_str("[style]\nlang = \"zh\"\nwidth = 90\n").unwrap();
+        assert_eq!(cfg.style.width, 90);
+    }
 
     #[test]
     fn old_configs_gain_new_segments_disabled() {

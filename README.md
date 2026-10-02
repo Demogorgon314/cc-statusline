@@ -154,7 +154,6 @@ theme = "claude"
 [style]
 mode = "plain"          # plain | nerd_font | powerline
 separator = "  "        # "" for powerline arrows
-lang = "en"             # or "zh"
 palette = "dark"        # dark | light | custom palette name
 width = 0              # auto-detect; --width overrides this
 

@@ -109,7 +109,7 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 | `output_style` | 输出风格（默认关闭） |
 | `directory` | 工作目录 |
 | `git` | 分支、改动统计、冲突、ahead/behind、打开的 PR（回退查询需要 `gh`） |
-| `context` | 主会话上下文占用百分比和输入 token / 容量（`上下文 62% · 620k/1M`）；`bar = true` 显示进度条 |
+| `context` | 主会话上下文占用百分比和输入 token / 容量（`ctx 62% · 620k/1M`）；`bar = true` 显示进度条 |
 | `usage` | 整个会话的输入 ↑ / 输出 ↓ / 缓存命中率，包含子 agent |
 | `subagent` | 子任务累计用量：输入最多的两个模型，其余显示 `+N 个模型`；紧凑模式显示子任务合计 |
 | `session` | 累计会话时长（默认关闭） |
@@ -119,7 +119,7 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 
 空间不够时按这个顺序去掉：session → changes → git → directory → subagent → tps → output_style → cost → context → quota → mode。
 
-“上下文”统计主会话的输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。各子任务拥有独立上下文，不累加到这个百分比。“子任务”段按模型汇总累计用量，包含已完成任务；紧凑模式只显示输入最多的一个模型和其余模型数量。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重；不完整的用量以 `≈` 标记并变暗。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
+`ctx` 统计主会话的输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。各子任务拥有独立上下文，不累加到这个百分比。`sub` 段按模型汇总累计用量，包含已完成任务；紧凑模式只显示输入最多的一个模型和其余模型数量。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重；不完整的用量以 `≈` 标记并变暗。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
 
 预览和配置器使用当前目录最近收到的状态栏数据。`preview --session ID` 只接受匹配的缓存会话。还没有数据时，预览显示通用 Claude 标签，配置器会为缺失字段补上演示值。
 
@@ -154,7 +154,6 @@ theme = "claude"
 [style]
 mode = "plain"          # plain | nerd_font | powerline
 separator = "  "        # "" 为 powerline 箭头
-lang = "zh"             # 或 "en"
 palette = "dark"        # dark | light | 自定义配色名
 width = 0              # 自动检测；--width 优先
 
