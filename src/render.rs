@@ -617,7 +617,7 @@ fn cache_ttl(seg: &SegmentConfig, left: f64, ttl: u32, compact: bool) -> Span {
     }
     let secs = left.ceil() as u64;
     let text = if compact {
-        format!("⏱{}", fmt_duration(secs))
+        format!("⏱ {}", fmt_duration(secs))
     } else {
         format!("⏱ {}:{:02}", secs / 60, secs % 60)
     };
@@ -1161,7 +1161,7 @@ mod tests {
         assert_eq!(render(&ctx, None), "│ ↑100 ↓10  cache 90%");
         ctx.stats.as_mut().unwrap().cache_expiry = Some((4130.0, 3600));
         assert!(render(&ctx, None).ends_with("cache 90% · ⏱ 52:10"));
-        assert!(render(&ctx, Some(24)).ends_with(" 90% ⏱52m"));
+        assert!(render(&ctx, Some(24)).ends_with(" 90% ⏱ 52m"));
         ctx.now = 5000.0;
         assert!(render(&ctx, None).contains("⏱ expired"));
         let cache = |ctx: &mut Ctx, k: &str| {
