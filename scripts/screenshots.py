@@ -70,10 +70,14 @@ def setup_home():
         def user(ago):
             return json.dumps({"type": "user", "sessionId": "session_demo", "timestamp": at(ago)}) + "\n"
         def message(ident, model, output, ago):
+            usage = {"input_tokens": 2100, "output_tokens": output, "cache_read_input_tokens": 96000}
+            if ident.startswith("main-"):
+                # A recorded 1h cache write drives the usage countdown.
+                usage.update({"cache_creation_input_tokens": 4000, "cache_creation":
+                              {"ephemeral_1h_input_tokens": 4000, "ephemeral_5m_input_tokens": 0}})
             return json.dumps({"type": "assistant", "sessionId": "session_demo",
                 "timestamp": at(ago), "message": {"id": ident, "model": model,
-                "usage": {"input_tokens": 2100, "output_tokens": output,
-                          "cache_read_input_tokens": 96000}}}) + "\n"
+                "usage": usage}}) + "\n"
         # Timestamps drive TPS: two agents and the main loop are mid-request.
         with open(transcript, "w") as f:
             for i in range(12):
