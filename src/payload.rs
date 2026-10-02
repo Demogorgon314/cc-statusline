@@ -18,7 +18,7 @@ pub struct Payload {
     pub mode: String,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<u64>,
-    /// Preview snapshots must not advance the live throughput sampler.
+    /// Preview snapshots read the session cache without advancing its cursors.
     pub is_preview: bool,
     pub lines_added: u64,
     pub lines_removed: u64,

@@ -2,6 +2,8 @@
 name = "cc-statusline"
 version = "0.1.1"
 edition = "2021"
+# File::try_lock
+rust-version = "1.89"
 description = "High-performance status line for Claude Code, written in Rust"
 license = "MIT"
 repository = "https://github.com/Demogorgon314/cc-statusline"

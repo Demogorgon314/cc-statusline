@@ -1331,7 +1331,7 @@ fn segment_help(id: SegmentId) -> &'static str {
         SegmentId::Subagent => "Cumulative subagent usage grouped by model, including finished tasks. Shows the two largest models by input, plus a count of the rest; compact mode shows one.",
         SegmentId::Session => "Time since the session was created.",
         SegmentId::Changes => "Lines added and removed during this session.",
-        SegmentId::Tps => "Recent session output per wall-clock second over a 30-second window, including parallel subagents and waiting time. Needs a baseline and at least one second of observation. Historical logs are excluded; partial reads retain a dimmed previous estimate. Idle output decays to zero; stale_secs controls dimming. Log batching makes this approximate, not model decode speed.",
+        SegmentId::Tps => "Recent session output per wall-clock second over a 30-second window, summed across parallel subagents. Each request's output is spread over its own transcript interval, so late or batched log writes do not spike. Partial reads dim the value. Idle output decays to zero; stale_secs controls dimming; hidden after 30 idle minutes. Output throughput, not model decode speed.",
         SegmentId::Quota => {
             "5h / 7d quota from Claude Code; optional OAuth fallback for older clients."
         }

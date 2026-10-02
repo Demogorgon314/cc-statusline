@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -62,16 +63,28 @@ pub enum CollectionState {
     Partial,
 }
 
+#[derive(Serialize, Deserialize)]
+struct Message {
+    model: String,
+    usage: Usage,
+    /// Previous user/assistant record: the request cannot have started earlier.
+    start: Option<f64>,
+    /// Last logged content block.
+    end: Option<f64>,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Cursor {
     offset: u64,
     skipping: bool,
     identity: String,
-    /// Bytes present on discovery/replacement are history, not fresh output.
-    live_from: Option<u64>,
+    /// Unchanged size and mtime at EOF skip opening the file again.
+    modified: Option<SystemTime>,
     prefix: Vec<u8>,
     created: Option<f64>,
-    messages: BTreeMap<String, (String, Usage)>,
+    /// Latest user or assistant record time in this log.
+    boundary: Option<f64>,
+    messages: BTreeMap<String, Message>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -79,10 +92,6 @@ struct Cache {
     files: BTreeMap<String, Cursor>,
     next_file: Option<String>,
     state: CollectionState,
-    // Persist sampler and cursors together: a cancelled process or preview must
-    // not consume transcript increments without recording their throughput.
-    sampler: tps::Sampler,
-    persisted_at: f64,
 }
 
 fn identity(meta: &std::fs::Metadata) -> String {
@@ -101,13 +110,18 @@ fn identity(meta: &std::fs::Metadata) -> String {
 /// oversized tool-result records are skipped without allocating their full size.
 const READ_LIMIT: usize = 4 * 1024 * 1024;
 
-fn advance(
-    path: &Path,
-    cursor: &mut Cursor,
-    session_id: &str,
-    sampler: &mut tps::Sampler,
-    now: f64,
-) -> CollectionState {
+fn advance(path: &Path, cursor: &mut Cursor, session_id: &str) -> CollectionState {
+    // Finished agents stay in the directory; most refreshes need only a stat.
+    let unchanged = |meta: &std::fs::Metadata| {
+        meta.is_file()
+            && !cursor.skipping
+            && meta.len() == cursor.offset
+            && meta.modified().ok() == cursor.modified
+            && identity(meta) == cursor.identity
+    };
+    if std::fs::metadata(path).is_ok_and(|meta| unchanged(&meta)) {
+        return CollectionState::Complete;
+    }
     let Ok(mut f) = File::open(path) else {
         return CollectionState::Partial;
     };
@@ -128,7 +142,6 @@ fn advance(
             ..Default::default()
         };
     }
-    let live_from = *cursor.live_from.get_or_insert(meta.len());
     if cursor.prefix.is_empty() {
         let _ = f.seek(SeekFrom::Start(0));
         let _ = (&mut f).take(256).read_to_end(&mut cursor.prefix);
@@ -138,10 +151,6 @@ fn advance(
     }
     let mut buf = Vec::new();
     let remaining = meta.len().saturating_sub(cursor.offset);
-    if remaining > READ_LIMIT as u64 {
-        // A backlog cannot be assigned to the current observation window.
-        cursor.live_from = Some(meta.len());
-    }
     if f.take(remaining.min(READ_LIMIT as u64))
         .read_to_end(&mut buf)
         .is_err()
@@ -155,11 +164,7 @@ fn advance(
         }
         let line = &buf[consumed..at];
         if !cursor.skipping {
-            let live =
-                cursor.offset + consumed as u64 >= live_from && remaining <= READ_LIMIT as u64;
-            if let Some((id, output)) = record(line, cursor, session_id) {
-                sampler.record(id, output, live, now);
-            }
+            record(line, cursor, session_id);
         }
         cursor.skipping = false;
         consumed = at + 1;
@@ -169,6 +174,7 @@ fn advance(
         consumed = buf.len();
     }
     cursor.offset += consumed as u64;
+    cursor.modified = meta.modified().ok();
     if cursor.offset == meta.len() && !cursor.skipping {
         CollectionState::Complete
     } else if remaining > READ_LIMIT as u64 || cursor.skipping {
@@ -178,31 +184,44 @@ fn advance(
     }
 }
 
-fn record(line: &[u8], cursor: &mut Cursor, session_id: &str) -> Option<(String, u64)> {
-    let v = serde_json::from_slice::<Value>(line).ok()?;
+fn record(line: &[u8], cursor: &mut Cursor, session_id: &str) {
+    let Ok(v) = serde_json::from_slice::<Value>(line) else {
+        return;
+    };
     if v.get("sessionId")
         .and_then(Value::as_str)
         .is_some_and(|id| id != session_id)
     {
-        return None;
+        return;
     }
-    if let Some(time) = v
+    let time = v
         .get("timestamp")
         .and_then(Value::as_str)
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-    {
-        let time = time.timestamp_millis() as f64 / 1000.0;
+        .map(|time| time.timestamp_millis() as f64 / 1000.0);
+    if let Some(time) = time {
         cursor.created = Some(cursor.created.map_or(time, |old| old.min(time)));
     }
-    if v.get("type").and_then(Value::as_str) != Some("assistant") {
-        return None;
+    let kind = v.get("type").and_then(Value::as_str);
+    if kind == Some("user") {
+        cursor.boundary = time.or(cursor.boundary);
     }
-    let m = v.get("message")?;
-    let u = m.get("usage").filter(|u| u.is_object())?;
-    let id = m
+    if kind != Some("assistant") {
+        return;
+    }
+    let previous = cursor.boundary;
+    cursor.boundary = time.or(cursor.boundary);
+    let Some(m) = v.get("message") else { return };
+    let Some(u) = m.get("usage").filter(|u| u.is_object()) else {
+        return;
+    };
+    let Some(id) = m
         .get("id")
         .and_then(Value::as_str)
-        .or_else(|| v.get("uuid").and_then(Value::as_str))?;
+        .or_else(|| v.get("uuid").and_then(Value::as_str))
+    else {
+        return;
+    };
     let n = |key| u.get(key).and_then(Value::as_u64).unwrap_or(0);
     let usage = Usage {
         input_other: n("input_tokens"),
@@ -214,9 +233,17 @@ fn record(line: &[u8], cursor: &mut Cursor, session_id: &str) -> Option<(String,
     let entry = cursor
         .messages
         .entry(id.to_string())
-        .or_insert_with(|| (crate::payload::label(model), Usage::default()));
-    entry.1.merge(usage);
-    Some((id.to_string(), entry.1.output))
+        .or_insert_with(|| Message {
+            model: crate::payload::label(model),
+            usage: Usage::default(),
+            start: previous.or(time),
+            end: time,
+        });
+    entry.usage.merge(usage);
+    entry.end = match (entry.end, time) {
+        (Some(end), Some(time)) => Some(end.max(time)),
+        (end, time) => end.or(time),
+    };
 }
 
 pub fn collect(payload: &Payload, deadline: Instant, now: f64) -> Option<SessionStats> {
@@ -226,7 +253,7 @@ pub fn collect(payload: &Payload, deadline: Instant, now: f64) -> Option<Session
         return None;
     }
     let key = paths::short_hash(&format!("{transcript}\0{session_id}"));
-    let cache_path = paths::cache_dir().join(format!("session-v2-{key}.json"));
+    let cache_path = paths::cache_dir().join(format!("session-v3-{key}.json"));
     collect_cached(payload, &cache_path, deadline, now)
 }
 
@@ -263,24 +290,20 @@ fn collect_cached(
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
+    // The lock holder persists its collection state with the snapshot.
     if payload.is_preview || lock.is_none() {
-        let mut stats = cache.stats(&payload.transcript_path);
-        if lock.is_none() && !payload.is_preview {
-            stats.state = CollectionState::Partial;
-        }
-        return Some(stats);
+        return Some(cache.stats(&payload.transcript_path, now));
     }
     let started = Instant::now();
-    let changed = cache.refresh(path, &payload.session_id, now, || {
+    let changed = cache.refresh(path, &payload.session_id, || {
         started.elapsed() < Duration::from_millis(100) && Instant::now() < deadline
     });
     if changed {
-        cache.persisted_at = now;
         if let Ok(data) = serde_json::to_vec(&cache) {
             let _ = paths::write_atomic(cache_path, &data);
         }
     }
-    Some(cache.stats(&payload.transcript_path))
+    Some(cache.stats(&payload.transcript_path, now))
 }
 
 impl Cache {
@@ -288,16 +311,10 @@ impl Cache {
         &mut self,
         path: &Path,
         session_id: &str,
-        now: f64,
         mut can_read: impl FnMut() -> bool,
     ) -> bool {
-        let before = (self.next_file.clone(), self.state, self.sampler.estimate());
-        let mut changed = self.sampler.begin(now);
-        if changed {
-            for cursor in self.files.values_mut() {
-                cursor.live_from = None;
-            }
-        }
+        let before = (self.next_file.clone(), self.state);
+        let mut changed = false;
         let mut files = BTreeSet::from([path.to_string_lossy().into_owned()]);
         // The subagent directory belongs to this transcript, never the latest session.
         let subdir = path.with_extension("").join("subagents");
@@ -350,15 +367,15 @@ impl Cache {
                 cursor.offset,
                 cursor.identity.clone(),
                 cursor.prefix.len(),
-                cursor.live_from,
+                cursor.modified,
             );
-            let state = advance(Path::new(file), cursor, session_id, &mut self.sampler, now);
+            let state = advance(Path::new(file), cursor, session_id);
             changed |= before
                 != (
                     cursor.offset,
                     cursor.identity.clone(),
                     cursor.prefix.len(),
-                    cursor.live_from,
+                    cursor.modified,
                 );
             match state {
                 CollectionState::Partial => self.state = state,
@@ -368,45 +385,64 @@ impl Cache {
                 _ => {}
             }
         }
-        self.sampler
-            .finish(now, self.state == CollectionState::Complete);
-        changed
-            || before != (self.next_file.clone(), self.state, self.sampler.estimate())
-            || now - self.persisted_at >= 60.0
+        changed || before != (self.next_file.clone(), self.state)
     }
 
-    fn stats(&self, transcript: &str) -> SessionStats {
+    fn stats(&self, transcript: &str, now: f64) -> SessionStats {
         let mut stats = SessionStats {
             state: self.state,
-            tps: self.sampler.estimate(),
             ..Default::default()
         };
-        let mut requests: BTreeMap<&str, (bool, &str, Usage)> = BTreeMap::new();
+        struct Request<'a> {
+            subagent: bool,
+            model: &'a str,
+            usage: Usage,
+            interval: Option<(f64, f64)>,
+        }
+        let mut requests: BTreeMap<&str, Request> = BTreeMap::new();
         for (file, cursor) in &self.files {
             if file == transcript {
                 stats.created = cursor.created;
             }
-            for (id, (model, usage)) in &cursor.messages {
+            for (id, message) in &cursor.messages {
                 // Forked agents may carry copies of parent conversation messages.
                 // A shared API message ID still represents only one billed request.
-                let entry =
-                    requests
-                        .entry(id)
-                        .or_insert((file != transcript, model, Usage::default()));
-                entry.2.merge(*usage);
+                let entry = requests.entry(id).or_insert(Request {
+                    subagent: file != transcript,
+                    model: &message.model,
+                    usage: Usage::default(),
+                    interval: None,
+                });
+                entry.usage.merge(message.usage);
                 if file == transcript {
-                    entry.0 = false;
+                    entry.subagent = false;
+                }
+                // The earliest copy is the original request.
+                if let (Some(start), Some(end)) = (message.start, message.end) {
+                    if entry.interval.is_none_or(|(_, old)| end < old) {
+                        entry.interval = Some((start.min(end), end));
+                    }
                 }
             }
         }
-        for (subagent, model, usage) in requests.values() {
-            stats.total.add(usage);
-            if *subagent {
+        stats.tps = tps::estimate(
+            requests.values().filter_map(|r| {
+                r.interval.map(|(start, end)| tps::Span {
+                    start,
+                    end,
+                    output: r.usage.output,
+                })
+            }),
+            now,
+        );
+        for r in requests.values() {
+            stats.total.add(&r.usage);
+            if r.subagent {
                 stats
                     .sub_by_model
-                    .entry((*model).to_string())
+                    .entry(r.model.to_string())
                     .or_default()
-                    .add(usage);
+                    .add(&r.usage);
             }
         }
         stats
@@ -443,8 +479,8 @@ mod tests {
         }
 
         fn refresh(&self, cache: &mut Cache, now: f64) -> SessionStats {
-            cache.refresh(&self.main, "one", now, || true);
-            cache.stats(self.main.to_str().unwrap())
+            cache.refresh(&self.main, "one", || true);
+            cache.stats(self.main.to_str().unwrap(), now)
         }
 
         fn payload(&self) -> Payload {
@@ -462,10 +498,24 @@ mod tests {
         }
     }
 
-    fn message(id: &str, output: u64) -> String {
+    /// Seconds since the epoch as Claude's RFC 3339 timestamp.
+    fn at(secs: f64) -> String {
+        chrono::DateTime::from_timestamp_millis((secs * 1000.0) as i64)
+            .unwrap()
+            .to_rfc3339()
+    }
+
+    fn user(secs: f64) -> String {
         format!(
             "{}\n",
-            serde_json::json!({"type":"assistant","sessionId":"one","message":{"id":id,"model":"Sonnet","usage":{"input_tokens":100,"output_tokens":output}}})
+            serde_json::json!({"type":"user","sessionId":"one","timestamp":at(secs)})
+        )
+    }
+
+    fn message(id: &str, output: u64, secs: f64) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({"type":"assistant","sessionId":"one","timestamp":at(secs),"message":{"id":id,"model":"Sonnet","usage":{"input_tokens":100,"output_tokens":output}}})
         )
     }
 
@@ -478,116 +528,116 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn interleaved_logs_and_new_agents_do_not_reset_or_spike_tps() {
-        let f = Fixture::new();
-        let a = f.agents.join("a.jsonl");
-        let b = f.agents.join("b.jsonl");
-        std::fs::write(&a, "").unwrap();
-        std::fs::write(&b, "").unwrap();
-        let mut cache = Cache::default();
-        assert!(f.refresh(&mut cache, 0.0).tps.is_none());
-        append(&a, &message("a1", 420));
-        assert_eq!(
-            f.refresh(&mut cache, 10.0).tps.unwrap().tokens_per_sec,
-            42.0
-        );
-        append(&b, &message("b1", 420));
-        assert_eq!(
-            f.refresh(&mut cache, 20.0).tps.unwrap().tokens_per_sec,
-            42.0
-        );
-        append(&a, &message("a2", 42));
-        let last = f.refresh(&mut cache, 21.0).tps;
-        assert_eq!(last.unwrap().tokens_per_sec, 42.0);
-        std::fs::write(f.agents.join("empty.jsonl"), "").unwrap();
-        assert_eq!(f.refresh(&mut cache, 21.0).tps, last);
-        let history = f.agents.join("history.jsonl");
-        std::fs::write(&history, message("a1", 420) + &message("old", 9000)).unwrap();
-        assert_eq!(f.refresh(&mut cache, 21.0).tps, last);
-        append(&history, &message("old", 9000));
-        append(&b, &message("a1", 420));
-        assert_eq!(f.refresh(&mut cache, 21.0).tps, last);
-        std::fs::write(&a, message("replacement", 50000)).unwrap();
-        assert_eq!(f.refresh(&mut cache, 21.0).tps, last);
-        std::fs::remove_file(&history).unwrap();
-        assert_eq!(f.refresh(&mut cache, 21.0).tps, last);
+    fn rate(stats: &SessionStats) -> f64 {
+        stats.tps.unwrap().tokens_per_sec
     }
 
     #[test]
-    fn partial_agent_preserves_last_sample_and_other_agents_keep_progressing() {
+    fn parallel_agents_are_timed_by_their_own_records() {
+        let f = Fixture::new();
+        let a = f.agents.join("a.jsonl");
+        let b = f.agents.join("b.jsonl");
+        let mut cache = Cache::default();
+        assert!(f.refresh(&mut cache, 100.0).tps.is_none());
+        // Agents discovered after they already logged output still count.
+        std::fs::write(&a, user(100.0) + &message("a1", 300, 110.0)).unwrap();
+        std::fs::write(&b, user(100.0) + &message("b1", 600, 120.0)).unwrap();
+        let stats = f.refresh(&mut cache, 130.0);
+        assert_eq!(rate(&stats), 30.0);
+        assert_eq!(stats.tps.unwrap().measured_at, 120.0);
+        // Observing the same logs later never adds output.
+        assert_eq!(rate(&f.refresh(&mut cache, 130.0)), 30.0);
+        // Split blocks extend the request instead of counting as new output.
+        append(&a, &message("a1", 330, 130.0));
+        assert_eq!(rate(&f.refresh(&mut cache, 130.0)), 31.0);
+        // Old history is outside the window; idle decays, then disappears.
+        let old = f.agents.join("old.jsonl");
+        std::fs::write(&old, user(0.0) + &message("old", 9000, 10.0)).unwrap();
+        assert_eq!(rate(&f.refresh(&mut cache, 130.0)), 31.0);
+        assert_eq!(rate(&f.refresh(&mut cache, 200.0)), 0.0);
+        assert!(f.refresh(&mut cache, 2000.0).tps.is_none());
+    }
+
+    #[test]
+    fn forked_copies_keep_the_original_request_time() {
+        let f = Fixture::new();
+        append(&f.main, &(user(100.0) + &message("m1", 300, 110.0)));
+        let fork = f.agents.join("fork.jsonl");
+        std::fs::write(&fork, user(125.0) + &message("m1", 300, 126.0)).unwrap();
+        let mut cache = Cache::default();
+        let stats = f.refresh(&mut cache, 130.0);
+        assert_eq!(stats.total.output, 300);
+        assert_eq!(rate(&stats), 10.0);
+        assert_eq!(stats.tps.unwrap().measured_at, 110.0);
+    }
+
+    #[test]
+    fn partial_agent_keeps_complete_usage_from_other_logs() {
         let f = Fixture::new();
         let a = f.agents.join("a.jsonl");
         std::fs::write(&a, "").unwrap();
         let mut cache = Cache::default();
-        f.refresh(&mut cache, 0.0);
-        append(&f.main, &message("main1", 420));
-        let last = f.refresh(&mut cache, 10.0).tps;
-        append(&a, message("a1", 42).trim_end());
-        append(&f.main, &message("main2", 42));
+        append(&f.main, &message("main1", 420, 10.0));
+        append(&a, message("a1", 42, 10.0).trim_end());
+        append(&f.main, &message("main2", 42, 10.0));
         let partial = f.refresh(&mut cache, 11.0);
         assert_eq!(partial.state, CollectionState::Partial);
         assert_eq!(partial.total.output, 462);
-        assert_eq!(partial.tps, last);
         append(&a, "\n");
         let complete = f.refresh(&mut cache, 12.0);
         assert_eq!(complete.total.output, 504);
         assert_eq!(complete.state, CollectionState::Complete);
-        assert_eq!(complete.tps.unwrap().tokens_per_sec, 42.0);
-        // A temporarily unreadable file retains its usage and old estimate.
+        // A temporarily unreadable file retains its usage.
         std::fs::remove_file(&a).unwrap();
         std::fs::create_dir(&a).unwrap();
         let unavailable = f.refresh(&mut cache, 13.0);
         assert_eq!(unavailable.state, CollectionState::Partial);
         assert_eq!(unavailable.total.output, 504);
-        assert_eq!(unavailable.tps, complete.tps);
     }
 
     #[test]
-    fn historical_backlog_is_not_fresh_throughput() {
+    fn backlog_catches_up_and_replacement_rebuilds() {
         let f = Fixture::new();
-        let mut cache = Cache::default();
-        f.refresh(&mut cache, 0.0);
-        append(&f.main, &message("main1", 420));
-        let last = f.refresh(&mut cache, 10.0).tps;
         let a = f.agents.join("history.jsonl");
-        std::fs::write(&a, "x".repeat(READ_LIMIT) + "\n" + &message("old", 9000)).unwrap();
+        std::fs::write(
+            &a,
+            "x".repeat(READ_LIMIT) + "\n" + &message("old", 9000, 0.0),
+        )
+        .unwrap();
+        let mut cache = Cache::default();
         let partial = f.refresh(&mut cache, 10.0);
         assert_eq!(partial.state, CollectionState::CatchingUp);
-        assert_eq!(partial.tps, last);
         let caught_up = f.refresh(&mut cache, 10.0);
         assert_eq!(caught_up.state, CollectionState::Complete);
-        assert_eq!(caught_up.tps, last);
-        assert_eq!(caught_up.total.output, 9420);
-        append(&a, &message("new", 42));
-        assert_eq!(
-            f.refresh(&mut cache, 11.0).tps.unwrap().tokens_per_sec,
-            42.0
-        );
+        assert_eq!(caught_up.total.output, 9000);
+        std::fs::write(&a, message("new", 42, 10.0)).unwrap();
+        assert_eq!(f.refresh(&mut cache, 10.0).total.output, 42);
+        std::fs::remove_file(&a).unwrap();
+        assert_eq!(f.refresh(&mut cache, 10.0).total.output, 0);
     }
 
     #[test]
     fn scan_budget_rotates_across_all_logs() {
         let f = Fixture::new();
         for id in ["a", "b", "c"] {
-            std::fs::write(f.agents.join(format!("{id}.jsonl")), message(id, 10)).unwrap();
+            std::fs::write(f.agents.join(format!("{id}.jsonl")), message(id, 10, 0.0)).unwrap();
         }
         let mut cache = Cache::default();
-        for now in 0..4 {
+        for _ in 0..4 {
             let mut remaining = 1;
-            cache.refresh(&f.main, "one", now as f64, || {
+            cache.refresh(&f.main, "one", || {
                 let allowed = remaining > 0;
                 remaining = 0;
                 allowed
             });
         }
         assert_eq!(cache.files.len(), 4);
-        assert_eq!(cache.stats(f.main.to_str().unwrap()).total.output, 30);
+        assert_eq!(cache.stats(f.main.to_str().unwrap(), 0.0).total.output, 30);
         assert_eq!(f.refresh(&mut cache, 4.0).state, CollectionState::Complete);
     }
 
     #[test]
-    fn preview_and_lock_contention_never_consume_live_increments() {
+    fn preview_and_lock_contention_read_the_last_snapshot() {
         let f = Fixture::new();
         let path = f.root.join("session.json");
         let mut payload = f.payload();
@@ -595,13 +645,12 @@ mod tests {
             collect_cached(p, &path, Instant::now() + Duration::from_secs(1), now).unwrap()
         };
         assert!(read(&payload, 0.0).tps.is_none());
-        append(&f.main, &message("m1", 420));
-        let last = read(&payload, 10.0).tps;
-        assert_eq!(last.unwrap().tokens_per_sec, 42.0);
+        append(&f.main, &(user(0.0) + &message("m1", 420, 10.0)));
+        assert_eq!(rate(&read(&payload, 10.0)), 42.0);
         let bytes = std::fs::read(&path).unwrap();
-        append(&f.main, &message("m2", 42));
+        append(&f.main, &message("m2", 42, 11.0));
         payload.is_preview = true;
-        assert_eq!(read(&payload, 11.0).tps, last);
+        assert_eq!(read(&payload, 11.0).total.output, 420);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         payload.is_preview = false;
         let lock = File::options()
@@ -611,13 +660,12 @@ mod tests {
             .unwrap();
         lock.try_lock().unwrap();
         let contended = read(&payload, 11.0);
-        assert_eq!(contended.state, CollectionState::Partial);
-        assert_eq!(contended.tps, last);
+        assert_eq!(contended.state, CollectionState::Complete, "no flicker");
+        assert_eq!(contended.total.output, 420);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         drop(lock);
-        assert_eq!(read(&payload, 11.0).tps.unwrap().tokens_per_sec, 42.0);
-        assert_eq!(read(&payload, 41.0).tps.unwrap().tokens_per_sec, 0.0);
-        // Once idle, avoid serializing the entire session on every timer tick.
+        assert_eq!(read(&payload, 11.0).total.output, 462);
+        // Idle refreshes neither reopen logs nor rewrite the cache.
         let bytes = std::fs::read(&path).unwrap();
         read(&payload, 42.0);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
@@ -632,8 +680,8 @@ mod tests {
             record(line.to_string().as_bytes(), &mut c, "one");
         }
         assert_eq!(c.messages.len(), 1);
-        assert_eq!(c.messages["msg-1"].1.output, 20);
-        assert_eq!(c.messages["msg-1"].1.input(), 100);
+        assert_eq!(c.messages["msg-1"].usage.output, 20);
+        assert_eq!(c.messages["msg-1"].usage.input(), 100);
         record(br#"{"type":"assistant","sessionId":"other","message":{"id":"msg-2","usage":{"input_tokens":999}}}"#, &mut c, "one");
         assert_eq!(c.messages.len(), 1);
     }
