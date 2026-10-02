@@ -75,6 +75,7 @@ fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
         SegmentId::Usage => {
             put("colorful", true.into());
             put("show_cache", true.into());
+            put("show_ttl", true.into());
         }
         SegmentId::Subagent => put("colorful", true.into()),
         SegmentId::Tps => {

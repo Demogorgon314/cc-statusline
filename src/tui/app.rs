@@ -1326,7 +1326,7 @@ fn segment_help(id: SegmentId) -> &'static str {
         SegmentId::Directory => "Working directory; depth: path segments kept.",
         SegmentId::Git => "Branch, diff stats, ahead/behind; pr: open PR via gh.",
         SegmentId::Context => "Main conversation context window fill, colored by pressure. Subagents have separate context windows.",
-        SegmentId::Usage => "Whole-session input ↑, output ↓ and cache hit rate.",
+        SegmentId::Usage => "Whole-session input ↑, output ↓ and cache hit rate; show_ttl adds the main conversation's prompt cache countdown when the transcript records its TTL.",
         SegmentId::Subagent => "Cumulative subagent usage grouped by model, including finished tasks. Shows the two largest models by input, plus a count of the rest; compact mode shows one.",
         SegmentId::Session => "Time since the session was created.",
         SegmentId::Changes => "Lines added and removed during this session.",

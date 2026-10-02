@@ -405,6 +405,11 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
                     span.dim = true;
                 }
             }
+            if seg.opt_bool("show_ttl", true) {
+                if let Some((expiry, ttl)) = st.cache_expiry {
+                    spans.push(cache_ttl(seg, expiry - ctx.now, ttl, compact));
+                }
+            }
             Some(spans)
         }
         SegmentId::Subagent => {
@@ -504,6 +509,43 @@ fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool) -> Vec<Span> {
         }
     }
     spans
+}
+
+/// `⏱ 52:10`: time left on the main conversation's prompt cache, from green
+/// to red as the TTL runs out; dimmed once expired.
+fn cache_ttl(seg: &SegmentConfig, left: f64, ttl: u32, compact: bool) -> Span {
+    let sep = if compact { " " } else { " · " };
+    if left <= 0.0 {
+        return Span {
+            text: format!("{sep}⏱ expired"),
+            color: None,
+            bold: false,
+            dim: true,
+        };
+    }
+    let secs = left.ceil() as u64;
+    let text = if compact {
+        format!("{sep}⏱{}", fmt_duration(secs))
+    } else {
+        format!("{sep}⏱ {}:{:02}", secs / 60, secs % 60)
+    };
+    // Reuse the hit-rate ramp's red, amber and green stops.
+    let share = left / ttl as f64;
+    let ramp = if share < 0.05 {
+        0.0
+    } else if share < 0.2 {
+        75.0
+    } else {
+        100.0
+    };
+    Span {
+        text,
+        color: seg
+            .opt_bool("colorful", true)
+            .then(|| rgb(cache_color(ramp))),
+        bold: false,
+        dim: false,
+    }
 }
 
 /// `5h 42% ↻1h20m · 7d 13% ↻Mon 08:00`: used share of each plan window
@@ -948,6 +990,45 @@ mod tests {
             .options
             .insert("hide_when_stale".into(), true.into());
         assert_eq!(render(&ctx, None), "");
+    }
+
+    #[test]
+    fn usage_shows_cache_countdown_only_when_known() {
+        let mut config = crate::themes::builtin("claude").unwrap();
+        config.segments.retain(|s| s.id == SegmentId::Usage);
+        let mut ctx = Ctx {
+            payload: Payload::default(),
+            config,
+            palette: crate::appearance::DARK,
+            models: Models::default(),
+            stats: Some(SessionStats {
+                total: Usage {
+                    input_other: 10,
+                    output: 10,
+                    input_cache_read: 90,
+                    input_cache_creation: 0,
+                },
+                ..Default::default()
+            }),
+            tps: None,
+            effort: None,
+            session_created: None,
+            git: None,
+            pr: None,
+            quota: None,
+            now: 1000.0,
+            color: false,
+        };
+        assert!(!render(&ctx, None).contains('⏱'));
+        ctx.stats.as_mut().unwrap().cache_expiry = Some((4130.0, 3600));
+        assert!(render(&ctx, None).contains("⏱ 52:10"));
+        assert!(render(&ctx, Some(24)).contains("⏱52m"));
+        ctx.now = 5000.0;
+        assert!(render(&ctx, None).contains("⏱ expired"));
+        ctx.config.segments[0]
+            .options
+            .insert("show_ttl".into(), false.into());
+        assert!(!render(&ctx, None).contains('⏱'));
     }
 
     #[test]

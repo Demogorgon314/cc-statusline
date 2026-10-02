@@ -110,7 +110,7 @@ With parallel subagents, the footer shows their combined output rate and how man
 | `directory` | Working directory |
 | `git` | Branch, diff, conflicts, ahead/behind, open PR (fallback lookup needs `gh`) |
 | `context` | Main conversation context percentage and input tokens / capacity (`ctx 62% · 620k/1M`); `bar = true` adds a meter |
-| `usage` | Whole-session input ↑ / output ↓ / cache hit rate, including subagents |
+| `usage` | Whole-session input ↑ / output ↓ / cache hit rate, including subagents; `⏱ 52:10` counts down the main conversation's prompt cache, shown only when the transcript records its TTL (`show_ttl`) |
 | `subagent` | Cumulative subagent usage: top two models by input, plus `+N models`; compact lines show the subagent total |
 | `session` | Accumulated session duration (disabled by default) |
 | `quota` | Five-hour / seven-day quota, optional gateway spend limit, reset times |

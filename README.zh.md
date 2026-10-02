@@ -110,7 +110,7 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 | `directory` | 工作目录 |
 | `git` | 分支、改动统计、冲突、ahead/behind、打开的 PR（回退查询需要 `gh`） |
 | `context` | 主会话上下文占用百分比和输入 token / 容量（`ctx 62% · 620k/1M`）；`bar = true` 显示进度条 |
-| `usage` | 整个会话的输入 ↑ / 输出 ↓ / 缓存命中率，包含子 agent |
+| `usage` | 整个会话的输入 ↑ / 输出 ↓ / 缓存命中率，包含子 agent；`⏱ 52:10` 为主对话 prompt cache 过期倒计时，仅在 transcript 记录了 TTL 时显示（`show_ttl`） |
 | `subagent` | 子任务累计用量：输入最多的两个模型，其余显示 `+N 个模型`；紧凑模式显示子任务合计 |
 | `session` | 累计会话时长（默认关闭） |
 | `quota` | 5h / 7d 额度、可选的网关消费上限和重置时间 |

@@ -57,6 +57,9 @@ pub struct SessionStats {
     pub active_logs: usize,
     /// Throughput per agent ID, from `agent-<id>.jsonl`.
     pub agent_tps: BTreeMap<String, tps::Estimate>,
+    /// Main conversation prompt cache: (expiry time, TTL seconds). Present only
+    /// when the transcript recorded the TTL of a cache write.
+    pub cache_expiry: Option<(f64, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +78,9 @@ struct Message {
     start: Option<f64>,
     /// Last logged content block.
     end: Option<f64>,
+    /// TTL seconds of this request's cache write, from `usage.cache_creation`.
+    #[serde(default)]
+    ttl: Option<u32>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -243,6 +249,19 @@ fn record(line: &[u8], cursor: &mut Cursor, session_id: &str) {
         input_cache_read: n("cache_read_input_tokens"),
         input_cache_creation: n("cache_creation_input_tokens"),
     };
+    // A write with both TTLs expires with its shorter-lived tail.
+    let written = |key| {
+        u.pointer(&format!("/cache_creation/{key}"))
+            .and_then(Value::as_u64)
+            .is_some_and(|n| n > 0)
+    };
+    let ttl = if written("ephemeral_5m_input_tokens") {
+        Some(300)
+    } else if written("ephemeral_1h_input_tokens") {
+        Some(3600)
+    } else {
+        None
+    };
     let model = m.get("model").and_then(Value::as_str).unwrap_or("Claude");
     let entry = cursor
         .messages
@@ -252,8 +271,10 @@ fn record(line: &[u8], cursor: &mut Cursor, session_id: &str) {
             usage: Usage::default(),
             start: previous.or(time),
             end: time,
+            ttl: None,
         });
     entry.usage.merge(usage);
+    entry.ttl = entry.ttl.or(ttl);
     entry.end = match (entry.end, time) {
         (Some(end), Some(time)) => Some(end.max(time)),
         (end, time) => end.or(time),
@@ -267,7 +288,7 @@ pub fn collect(payload: &Payload, deadline: Instant, now: f64) -> Option<Session
         return None;
     }
     let key = paths::short_hash(&format!("{transcript}\0{session_id}"));
-    let cache_path = paths::cache_dir().join(format!("session-v3-{key}.json"));
+    let cache_path = paths::cache_dir().join(format!("session-v4-{key}.json"));
     collect_cached(payload, &cache_path, deadline, now)
 }
 
@@ -472,6 +493,10 @@ impl Cache {
                 stats.agent_tps.insert(id.to_string(), estimate);
             }
         }
+        stats.cache_expiry = self
+            .files
+            .get(transcript)
+            .and_then(|cursor| cache_expiry(cursor.messages.values()));
         for r in requests.values() {
             stats.total.add(&r.usage);
             if r.subagent {
@@ -484,6 +509,26 @@ impl Cache {
         }
         stats
     }
+}
+
+/// The latest cached request refreshes the prefix for the TTL it was last
+/// written with. Its start bounds when the server refreshed it, so the
+/// countdown errs early. Unknown TTLs yield nothing rather than a guess.
+fn cache_expiry<'a>(messages: impl Iterator<Item = &'a Message>) -> Option<(f64, u32)> {
+    let mut timed: Vec<_> = messages
+        .filter_map(|m| Some((m.end?, m.start?, m)))
+        .collect();
+    timed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (_, start, latest) = timed
+        .iter()
+        .rev()
+        .find(|(_, _, m)| m.usage.input_cache_read > 0 || m.usage.input_cache_creation > 0)?;
+    let ttl = timed
+        .iter()
+        .rev()
+        .skip_while(|(_, _, m)| !std::ptr::eq(*m, *latest))
+        .find_map(|(_, _, m)| m.ttl)?;
+    Some((start + ttl as f64, ttl))
 }
 
 #[cfg(test)]
@@ -563,6 +608,52 @@ mod tests {
             .unwrap()
             .write_all(text.as_bytes())
             .unwrap();
+    }
+
+    fn cached(id: &str, secs: f64, written: Option<&str>) -> String {
+        let mut usage =
+            serde_json::json!({"input_tokens":2,"output_tokens":10,"cache_read_input_tokens":5000});
+        if let Some(key) = written {
+            usage["cache_creation_input_tokens"] = 800.into();
+            usage["cache_creation"] = serde_json::json!({
+                "ephemeral_1h_input_tokens": if key == "1h" { 800 } else { 0 },
+                "ephemeral_5m_input_tokens": if key == "5m" { 800 } else { 0 },
+            });
+        }
+        format!(
+            "{}\n",
+            serde_json::json!({"type":"assistant","sessionId":"one","timestamp":at(secs),"message":{"id":id,"model":"Opus","usage":usage}})
+        )
+    }
+
+    #[test]
+    fn cache_expiry_needs_a_recorded_ttl() {
+        let f = Fixture::new();
+        let mut cache = Cache::default();
+        append(&f.main, &(user(100.0) + &message("plain", 10, 110.0)));
+        assert_eq!(f.refresh(&mut cache, 120.0).cache_expiry, None);
+        // Reads without a write keep the last recorded TTL, timed from the request start.
+        append(&f.main, &(user(200.0) + &cached("w", 230.0, Some("1h"))));
+        append(&f.main, &(user(400.0) + &cached("r", 430.0, None)));
+        assert_eq!(
+            f.refresh(&mut cache, 440.0).cache_expiry,
+            Some((4000.0, 3600))
+        );
+        append(&f.main, &(user(500.0) + &cached("five", 510.0, Some("5m"))));
+        assert_eq!(
+            f.refresh(&mut cache, 520.0).cache_expiry,
+            Some((800.0, 300))
+        );
+        // Subagents keep their own cache prefixes.
+        std::fs::write(
+            f.agents.join("agent-a.jsonl"),
+            user(600.0) + &cached("sub", 610.0, Some("1h")),
+        )
+        .unwrap();
+        assert_eq!(
+            f.refresh(&mut cache, 620.0).cache_expiry,
+            Some((800.0, 300))
+        );
     }
 
     fn rate(stats: &SessionStats) -> f64 {
