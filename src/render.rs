@@ -312,9 +312,10 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             }
             let ratio = p.context_usage.clamp(0.0, 1.0);
             let pct = (ratio * 100.0).round() as u32;
-            let tok = if ratio >= 0.85 {
+            // judged on the shown number, so "85%" is never the warning color
+            let tok = if pct >= 85 {
                 "error"
-            } else if ratio >= 0.6 {
+            } else if pct >= 60 {
                 "warning"
             } else {
                 "success"
@@ -480,9 +481,9 @@ fn quota_segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Sp
         // ceil like upstream usagePercent: any use shows at least 1%; the
         // epsilon keeps 0.07 * 100 = 7.000000000000001 from reading as 8%
         let pct = (ratio * 100.0 - 1e-9).ceil().max(0.0) as u32;
-        let tok = if ratio >= 0.85 {
+        let tok = if pct >= 85 {
             "error"
-        } else if ratio >= 0.5 {
+        } else if pct >= 50 {
             "warning"
         } else {
             "success"
@@ -763,8 +764,31 @@ fn ansi_len(s: &str) -> Option<usize> {
     }
 }
 
+/// (bytes, columns) of the character at the start of `s` together with the
+/// zero-width marks that follow it, so a cut never strands a variation
+/// selector. VS16 asks for emoji presentation, which terminals draw 2 wide
+/// (🛡️ is U+1F6E1 U+FE0F and U+1F6E1 alone is 1 column).
+fn cluster(s: &str) -> (usize, usize) {
+    let mut chars = s.chars();
+    let Some(base) = chars.next() else {
+        return (0, 0);
+    };
+    let mut len = base.len_utf8();
+    let mut w = base.width().unwrap_or(0);
+    for ch in chars {
+        if ch.width() != Some(0) {
+            break;
+        }
+        if ch == '\u{fe0f}' {
+            w = w.max(2);
+        }
+        len += ch.len_utf8();
+    }
+    (len, w)
+}
+
 /// Terminal columns of a rendered line: escapes are zero-width, East Asian
-/// wide characters count 2.
+/// wide characters and emoji presentation count 2.
 pub fn visible_width(s: &str) -> usize {
     let mut w = 0;
     let mut i = 0;
@@ -773,9 +797,9 @@ pub fn visible_width(s: &str) -> usize {
             i += n;
             continue;
         }
-        let ch = s[i..].chars().next().unwrap_or(' ');
-        w += ch.width().unwrap_or(0);
-        i += ch.len_utf8();
+        let (n, cw) = cluster(&s[i..]);
+        w += cw;
+        i += n;
     }
     w
 }
@@ -796,14 +820,13 @@ pub(crate) fn truncate(s: &str, width: usize, color: bool) -> String {
             i += n;
             continue;
         }
-        let ch = s[i..].chars().next().unwrap_or(' ');
-        let w = ch.width().unwrap_or(0);
+        let (n, w) = cluster(&s[i..]);
         if used + w + 1 > width {
             break;
         }
-        out.push(ch);
+        out.push_str(&s[i..i + n]);
         used += w;
-        i += ch.len_utf8();
+        i += n;
     }
     out.push('…');
     if link_open {
@@ -819,6 +842,15 @@ pub(crate) fn truncate(s: &str, width: usize, color: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emoji_presentation_is_two_columns_and_kept_whole() {
+        assert_eq!(visible_width("🛡️ x"), 4);
+        assert_eq!(visible_width("é"), 1); // e + combining acute
+                                           // the selector is never cut off its base
+        assert_eq!(truncate("🛡️🛡️", 3, false), "🛡️…");
+        assert_eq!(truncate("🛡️🛡️", 2, false), "…");
+    }
 
     #[test]
     fn estimated_tps_compacts_and_marks_idle_measurements() {

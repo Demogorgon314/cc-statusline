@@ -95,6 +95,9 @@ pub struct App {
     seg_list: Option<(Rect, usize)>,
     /// left button held on a segment row
     press: Option<Press>,
+    /// config.toml exists but did not parse: the editor started from the
+    /// default theme, so the first save must be confirmed
+    load_error: Option<String>,
 }
 
 /// A left-button press on a segment row, which becomes a drag once the
@@ -174,7 +177,10 @@ fn color_desc(c: &Option<AnsiColor>) -> String {
 
 impl App {
     pub fn new() -> App {
-        let config = Config::load();
+        let (config, load_error) = match Config::try_load() {
+            Ok(cfg) => (cfg, None),
+            Err(e) => (themes::get("claude"), (!e.is_empty()).then_some(e)),
+        };
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -189,7 +195,9 @@ impl App {
             seg: 0,
             field: 0,
             popup: None,
-            status: None,
+            status: load_error
+                .as_ref()
+                .map(|e| format!("config.toml failed to load ({e}); showing the claude theme")),
             confirm_quit: false,
             quit: false,
             hits: Hits::new(),
@@ -198,6 +206,7 @@ impl App {
             exit_all: false,
             seg_list: None,
             press: None,
+            load_error,
         }
     }
 
@@ -265,6 +274,9 @@ impl App {
         let mut cfg = themes::get(name);
         cfg.style.lang = self.config.style.lang;
         cfg.style.palette = self.config.style.palette.clone();
+        // themes never set these; they belong to this install, not the look
+        cfg.style.separator_color = self.config.style.separator_color.clone();
+        cfg.style.width = self.config.style.width;
         self.config = cfg;
         self.seg = self.seg.min(self.config.segments.len().saturating_sub(1));
         self.field = 0;
@@ -537,6 +549,11 @@ impl App {
                     input: String::new(),
                     target: TextTarget::SaveTheme,
                 })
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') if self.load_error.is_some() => {
+                self.load_error = None;
+                self.status =
+                    Some("config.toml did not load — press S again to overwrite it".into());
             }
             KeyCode::Char('s') | KeyCode::Char('S') => match self.config.save() {
                 Ok(()) => {

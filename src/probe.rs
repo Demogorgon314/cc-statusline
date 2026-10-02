@@ -48,16 +48,20 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> 
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    // A grandchild can inherit stdout and hold the pipe open after the
+    // child exits, so the read is bounded by the same deadline.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut s = String::new();
         let _ = std::io::Read::read_to_string(&mut stdout, &mut s);
-        s
+        let _ = tx.send(s);
     });
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let out = reader.join().ok()?;
+                let left = deadline.saturating_duration_since(Instant::now());
+                let out = rx.recv_timeout(left).ok()?;
                 return status.success().then_some(out);
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
@@ -148,7 +152,12 @@ fn untracked_lines(cwd: &str, deadline: Instant) -> u64 {
         if Instant::now() > deadline {
             break;
         }
-        let Ok(f) = std::fs::File::open(Path::new(cwd).join(name)) else {
+        let path = Path::new(cwd).join(name);
+        // a FIFO or device would block in open/read past the deadline
+        if !std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let Ok(f) = std::fs::File::open(path) else {
             continue;
         };
         let mut data = Vec::new();

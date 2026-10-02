@@ -337,7 +337,8 @@ fn native_fields_render_without_credentials_or_transcript() {
         "changes",
         "mode",
     ]);
-    let text = f.text(&[], &json!({
+    // An explicit width: the real terminal outranks COLUMNS when one exists.
+    let text = f.text(&["--width", "1000"], &json!({
         "model":{"display_name":"Opus 5.5 (1M context)"},"effort":{"level":"high"},
         "context_window":{"context_window_size":1000000,"used_percentage":12.5,
             "current_usage":{"input_tokens":25000,"cache_read_input_tokens":100000,"output_tokens":10000}},

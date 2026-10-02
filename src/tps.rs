@@ -64,7 +64,9 @@ pub fn estimate(spans: impl IntoIterator<Item = Span>, now: f64) -> Option<Estim
     }
     let mut tokens = 0.0;
     for s in &spans {
-        if s.end < cutoff {
+        // With no duration to place them, instant records only count while
+        // recent; otherwise a short history would sum all of them over 1s.
+        if s.end < cutoff || (s.end <= s.start && s.end < last - WINDOW_SECS) {
             continue;
         }
         tokens += if s.start >= cutoff || s.end <= s.start {
@@ -136,6 +138,9 @@ mod tests {
     #[test]
     fn instant_records_and_unfinished_clocks_are_bounded() {
         let e = estimate([span(5.0, 5.0, 100), span(0.0, 5.0, 0)], 10.0).unwrap();
+        assert_eq!(e.tokens_per_sec, 100.0);
+        // Old instant records are not summed into the current rate.
+        let e = estimate([span(0.0, 0.0, 5000), span(50.0, 50.0, 100)], 60.0).unwrap();
         assert_eq!(e.tokens_per_sec, 100.0);
         // Records stamped after `now` (clock skew) are not yet counted.
         assert!(estimate([span(0.0, 20.0, 400)], 10.0).is_none());

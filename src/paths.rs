@@ -126,6 +126,16 @@ pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> 
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    // Replace a symlink's target, not the link: dotfile managers symlink
+    // settings.json and renaming over it would detach their copy.
+    let resolved;
+    let path = if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        // a dangling link is replaced like a missing file
+        resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        resolved.as_path()
+    } else {
+        path
+    };
     let tmp = path.with_extension(format!("{}.{nonce}.tmp", std::process::id()));
     let result = (|| {
         let mut options = OpenOptions::new();
@@ -148,4 +158,25 @@ pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> 
     result.inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    #[test]
+    fn write_atomic_keeps_symlinks() {
+        let dir = std::env::temp_dir().join(format!("cc-statusline-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.json");
+        let link = dir.join("settings.json");
+        std::fs::write(&target, "old").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        super::write_atomic(&link, b"new").unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -339,6 +339,9 @@ fn replace_binary(exe: &Path, binary: &[u8]) -> Result<(), String> {
     }
     std::fs::rename(&staged, exe).map_err(|e| {
         let _ = std::fs::remove_file(&staged);
+        // put the running binary back, or every later render would fail
+        #[cfg(windows)]
+        let _ = std::fs::rename(exe.with_extension("exe.old"), exe);
         format!("cannot replace {}: {e}", exe.display())
     })
 }
