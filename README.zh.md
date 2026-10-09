@@ -120,7 +120,7 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 
 空间不够时按这个顺序去掉：session → changes → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode。
 
-`ctx` 统计主会话的输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。各子任务拥有独立上下文，不累加到这个百分比。`sub` 段按模型汇总累计用量，包含已完成任务；紧凑模式只显示输入最多的一个模型和其余模型数量。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重；不完整的用量以 `≈` 标记并变暗。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
+`ctx` 统计主会话的输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。如果用 `/autocompact` 给当前模型设置了更小的窗口（settings.json 中的 `modelSettings.<id>.autoCompactWindow`），就以该窗口作为容量，因为 compact 在那里触发。各子任务拥有独立上下文，不累加到这个百分比。`sub` 段按模型汇总累计用量，包含已完成任务；紧凑模式只显示输入最多的一个模型和其余模型数量。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重；不完整的用量以 `≈` 标记并变暗。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
 
 预览和配置器使用当前目录最近收到的状态栏数据。`preview --session ID` 只接受匹配的缓存会话。还没有数据时，预览显示通用 Claude 标签，配置器会为缺失字段补上演示值。
 

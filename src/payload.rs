@@ -61,6 +61,25 @@ pub fn label(s: &str) -> String {
 }
 
 pub fn parse(buf: &[u8]) -> Payload {
+    let settings = std::fs::read(crate::paths::claude_home().join("settings.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    parse_with(buf, settings.as_ref())
+}
+
+/// `modelSettings.<id>.autoCompactWindow` from settings.json (what
+/// `/autocompact` writes). The payload's id may carry a `[1m]` suffix that
+/// the settings key lacks.
+fn compact_window(settings: &Value, model_id: &str) -> Option<u64> {
+    let models = settings.get("modelSettings")?;
+    let base = model_id.split('[').next().unwrap_or(model_id);
+    [model_id, base]
+        .into_iter()
+        .find_map(|id| models.get(id)?.get("autoCompactWindow")?.as_u64())
+        .filter(|w| *w > 0)
+}
+
+fn parse_with(buf: &[u8], settings: Option<&Value>) -> Payload {
     let Ok(v) = serde_json::from_slice::<Value>(buf) else {
         return Payload::default();
     };
@@ -76,10 +95,17 @@ pub fn parse(buf: &[u8]) -> Payload {
             "/context_window/current_usage/cache_creation_input_tokens",
         ))
         .saturating_add(n("/context_window/current_usage/cache_read_input_tokens"));
-    let max_context_tokens = n("/context_window/context_window_size");
+    let window = n("/context_window/context_window_size");
+    // auto-compact fires at the configured window, so that is the real limit;
+    // Claude Code's used_percentage is relative to the full model window
+    let compact = settings
+        .and_then(|s| compact_window(s, v.pointer("/model/id")?.as_str()?))
+        .filter(|w| window > 0 && *w < window);
+    let max_context_tokens = compact.unwrap_or(window);
     let context_usage = v
         .pointer("/context_window/used_percentage")
         .and_then(Value::as_f64)
+        .filter(|_| compact.is_none())
         .map(|p| p / 100.0)
         .unwrap_or_else(|| context_tokens as f64 / max_context_tokens.max(1) as f64);
     let mut modes = Vec::new();
@@ -150,12 +176,38 @@ mod tests {
     use super::*;
     #[test]
     fn nullable_context_and_preferred_workspace() {
-        let p = parse(br#"{"cwd":"/old","workspace":{"current_dir":"/new"},"model":{"id":"claude-test"},"context_window":{"context_window_size":1000000,"current_usage":null,"used_percentage":null}}"#);
+        let p = parse_with(br#"{"cwd":"/old","workspace":{"current_dir":"/new"},"model":{"id":"claude-test"},"context_window":{"context_window_size":1000000,"current_usage":null,"used_percentage":null}}"#, None);
         assert_eq!(p.cwd, "/new");
         assert_eq!(p.model, "claude-test");
         assert_eq!(p.context_usage, 0.0);
-        let p = parse(br#"{"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":1000,"cache_read_input_tokens":18000,"cache_creation_input_tokens":1000,"output_tokens":9000}}}"#);
+        let p = parse_with(br#"{"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":1000,"cache_read_input_tokens":18000,"cache_creation_input_tokens":1000,"output_tokens":9000}}}"#, None);
         assert_eq!(p.context_tokens, 20000);
         assert_eq!(p.context_usage, 0.1);
+    }
+
+    #[test]
+    fn auto_compact_window_replaces_the_model_window() {
+        let buf = br#"{"model":{"id":"claude-opus-5-5[1m]"},"context_window":{"context_window_size":1000000,"current_usage":{"input_tokens":2,"cache_read_input_tokens":99998,"cache_creation_input_tokens":0},"used_percentage":10}}"#;
+        let settings: Value = serde_json::from_str(
+            r#"{"modelSettings":{"claude-opus-5-5":{"autoCompactWindow":400000}}}"#,
+        )
+        .unwrap();
+        let p = parse_with(buf, Some(&settings));
+        assert_eq!(p.max_context_tokens, 400_000);
+        assert_eq!(p.context_usage, 0.25);
+        // other models, and windows no smaller than the model's, are ignored
+        let other: Value = serde_json::from_str(
+            r#"{"modelSettings":{"claude-sonnet-5-5":{"autoCompactWindow":400000}}}"#,
+        )
+        .unwrap();
+        let larger: Value = serde_json::from_str(
+            r#"{"modelSettings":{"claude-opus-5-5":{"autoCompactWindow":2000000}}}"#,
+        )
+        .unwrap();
+        for s in [None, Some(&other), Some(&larger)] {
+            let p = parse_with(buf, s);
+            assert_eq!(p.max_context_tokens, 1_000_000);
+            assert_eq!(p.context_usage, 0.1);
+        }
     }
 }
