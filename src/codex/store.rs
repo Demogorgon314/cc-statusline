@@ -170,6 +170,7 @@ impl Store {
     }
 
     /// Caller owns the store lock.
+    #[cfg(any(unix, test))]
     pub fn save(&self, job: &Job) -> io::Result<()> {
         paths::write_atomic(
             &self.dir(&job.id).join("job.json"),
