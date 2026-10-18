@@ -25,6 +25,14 @@ pub fn cache_dir() -> PathBuf {
     claude_home().join("cc-statusline-cache")
 }
 
+/// `$CODEX_JOBS_HOME`, else `~/.codex-jobs`.
+pub fn codex_jobs_home() -> PathBuf {
+    std::env::var_os("CODEX_JOBS_HOME")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().unwrap_or_default().join(".codex-jobs"))
+}
+
 /// Stable short hash for cache file names (FNV-1a 64; std's hasher is not
 /// stable across releases).
 pub fn short_hash(s: &str) -> String {

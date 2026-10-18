@@ -1,4 +1,5 @@
 target/
 bin/
+!plugins/codex-jobs/bin/
 .building
 __pycache__/

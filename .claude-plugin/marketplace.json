@@ -1,0 +1,12 @@
+{
+  "name": "cc-statusline",
+  "description": "Claude Code plugins for visible Codex background jobs",
+  "owner": { "name": "Demogorgon314" },
+  "plugins": [
+    {
+      "name": "codex-jobs",
+      "source": "./plugins/codex-jobs",
+      "description": "Delegate background work to Codex with live status notifications"
+    }
+  ]
+}

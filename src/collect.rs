@@ -17,6 +17,28 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
     );
     let wants = |id| config.segment(id).is_some_and(|s| s.enabled);
     let now = paths::now_secs();
+    let codex_jobs = config
+        .segment(SegmentId::Codex)
+        .filter(|s| s.enabled)
+        .map_or_else(Vec::new, |s| {
+            let scope = if payload.cwd.is_empty()
+                || s.options.get("scope").and_then(toml::Value::as_str) == Some("all")
+            {
+                None
+            } else {
+                let path = std::path::PathBuf::from(&payload.cwd);
+                Some(path.canonicalize().unwrap_or(path))
+            };
+            crate::codex::Scan::default()
+                .poll(
+                    &crate::codex::Store::new(),
+                    Some(now - s.opt_int("recent_secs", 600).max(0) as f64),
+                    Some(deadline.min(Instant::now() + Duration::from_millis(30))),
+                )
+                .into_iter()
+                .filter(|j| j.in_scope(scope.as_deref()))
+                .collect()
+        });
     let stats = if wants(SegmentId::Usage)
         || wants(SegmentId::Cache)
         || wants(SegmentId::Subagent)
@@ -72,6 +94,7 @@ pub fn collect(mut payload: Payload, config: Config, started: Instant) -> Ctx {
     let effort = payload.effort.clone();
     let tps = stats.as_ref().and_then(|stats| stats.tps);
     Ctx {
+        codex_jobs,
         payload,
         config,
         palette,

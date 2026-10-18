@@ -8,6 +8,75 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Detach the job supervisor from the invoking Claude session.
+#[cfg(unix)]
+pub fn spawn_codex_supervisor(
+    root: &Path,
+    dir: &Path,
+    id: &str,
+    max: u32,
+) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    let log = std::fs::File::create(dir.join("supervisor.log"))?;
+    let mut cmd = Command::new(std::env::current_exe()?);
+    cmd.args(["codex", "__supervise", id, "--max", &max.to_string()])
+        .env("CODEX_JOBS_HOME", root)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+}
+
+/// Start Codex in a separate process group so cancellation includes its tools.
+#[cfg(unix)]
+pub fn spawn_codex_job(
+    job: &crate::codex::Job,
+    dir: &Path,
+) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    let required = |value: &Option<String>| {
+        value
+            .clone()
+            .ok_or_else(|| std::io::Error::other("job missing execution options"))
+    };
+    let cwd = job
+        .cwd
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("job missing cwd"))?;
+    let mut cmd =
+        Command::new(std::env::var_os("CODEX_JOBS_CODEX_BIN").unwrap_or_else(|| "codex".into()));
+    cmd.args(["exec", "--json", "-o"])
+        .arg(dir.join("last.md"))
+        .args([
+            "-m",
+            &required(&job.model)?,
+            "-c",
+            &format!(
+                "model_reasoning_effort={}",
+                serde_json::to_string(&required(&job.effort)?)?
+            ),
+            "-s",
+            &required(&job.sandbox)?,
+            "-C",
+        ])
+        .arg(cwd)
+        .args(&job.extra_args)
+        .arg("-")
+        .stdin(std::fs::File::open(dir.join("prompt.md"))?)
+        .stdout(std::fs::File::create(dir.join("events.jsonl"))?)
+        .stderr(std::fs::File::create(dir.join("stderr.log"))?)
+        .process_group(0);
+    cmd.spawn()
+}
+
 #[derive(Serialize, Deserialize)]
 struct Cached<T> {
     t: f64,

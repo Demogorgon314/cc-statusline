@@ -25,6 +25,7 @@ impl Fixture {
         let mut child = Command::new(env!("CARGO_BIN_EXE_cc-statusline"))
             .args(args)
             .env("CLAUDE_CONFIG_DIR", &self.0)
+            .env("CODEX_JOBS_HOME", self.0.join("codex-jobs"))
             .env("CC_STATUSLINE_NO_COLOR", "1")
             .env("COLUMNS", "1000")
             .stdin(Stdio::piped())

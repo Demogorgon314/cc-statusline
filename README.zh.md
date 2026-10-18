@@ -98,6 +98,10 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 
 ## 参考
 
+### Codex 后台任务
+
+通过 `cc-statusline codex run -m gpt-6.1-sol -e high prompt.md` 提交后台任务。`codex` 段显示运行中的任务和最近结果；已有配置请在配置器中开启 **Codex**，新配置默认开启。可选的 Claude Code 插件会把状态变化推送到会话，并提供列表、日志、结果和取消命令。详见[插件安装和 CLI 指南](plugins/codex-jobs/README.md)。
+
 <details>
 <summary>所有段</summary>
 
@@ -116,9 +120,10 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 | `session` | 累计会话时长（默认关闭） |
 | `quota` | 5h / 7d 额度、可选的网关消费上限和重置时间 |
 | `changes` | 会话新增 / 删除行数（默认关闭） |
+| `codex` | Codex 后台任务：运行中、排队中和最近结果 |
 | `tps` | 近期每秒生成的输出：`≈42 tok/s`；最近 30 秒有三个日志在输出时附加 `×3`（紧凑模式为 `≈42 t/s ×3`；默认关闭） |
 
-空间不够时按这个顺序去掉：session → changes → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode。
+空间不够时按这个顺序去掉：session → changes → codex → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode。
 
 `ctx` 统计主会话的输入、缓存读取和写入，不含输出；优先使用 Claude 原生百分比。如果用 `/autocompact` 给当前模型设置了更小的窗口（settings.json 中的 `modelSettings.<id>.autoCompactWindow`），就以该窗口作为容量，因为 compact 在那里触发。各子任务拥有独立上下文，不累加到这个百分比。`sub` 段按模型汇总累计用量，包含已完成任务；紧凑模式只显示输入最多的一个模型和其余模型数量。会话累计用量只读取明确传入的 transcript 及其相邻子 agent 日志，按消息 ID 去重；不完整的用量以 `≈` 标记并变暗。缺失会话不会继承其他会话的统计。额度属于账号，可以跨会话保留。
 

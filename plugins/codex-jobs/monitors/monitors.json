@@ -1,0 +1,7 @@
+[
+  {
+    "name": "codex-jobs",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/codex-jobs watch",
+    "description": "Codex background jobs"
+  }
+]
