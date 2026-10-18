@@ -4,6 +4,7 @@ mod events;
 #[cfg(unix)]
 mod runner;
 mod store;
+mod wait;
 mod watch;
 
 use crate::{paths, render};
@@ -26,6 +27,9 @@ pub struct RunArgs {
     sandbox: String,
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     max: Option<u32>,
+    /// Wait for completion and print the final response (stopping the wait does not cancel the job)
+    #[arg(long)]
+    wait: bool,
     prompt_file: PathBuf,
     #[arg(last = true)]
     extra_args: Vec<String>,
@@ -52,6 +56,8 @@ pub enum CodexCmd {
     },
     /// Show a job and its result or error logs
     Show { id: String },
+    /// Wait for an existing job and print its final response; unsuccessful jobs return nonzero
+    Wait { id: String },
     /// Tail human-readable Codex events
     Log {
         id: String,
@@ -84,7 +90,15 @@ fn execute(cmd: CodexCmd) -> io::Result<()> {
     let store = Store::new();
     match cmd {
         #[cfg(unix)]
-        CodexCmd::Run(args) => runner::run(&store, args),
+        CodexCmd::Run(args) => {
+            let wait = args.wait;
+            // Submission releases the store lock before waiting, so the supervisor can progress.
+            let id = runner::run(&store, args)?;
+            if wait {
+                wait::wait(&store, &id)?;
+            }
+            Ok(())
+        }
         #[cfg(unix)]
         CodexCmd::Supervise { id, max } => runner::supervise(&store, &id, max),
         #[cfg(unix)]
@@ -98,6 +112,7 @@ fn execute(cmd: CodexCmd) -> io::Result<()> {
         }
         CodexCmd::Ls { all, json, here } => list(&store, all, json, here),
         CodexCmd::Show { id } => show(&store, &id),
+        CodexCmd::Wait { id } => wait::wait(&store, &id),
         CodexCmd::Log { id, lines, follow } => events::log(&store, &id, lines, follow),
         CodexCmd::Prune { older_than } => prune(&store, older_than),
         CodexCmd::Watch { all, interval } => watch::watch(&store, all, interval),

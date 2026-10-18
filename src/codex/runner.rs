@@ -3,7 +3,7 @@
 use super::{display_path, store::pid_alive, Job, RunArgs, Status, Store};
 use crate::{paths, probe};
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -47,7 +47,7 @@ fn reserve_id(
     Err(io::Error::other("could not allocate a unique job id"))
 }
 
-pub fn run(store: &Store, args: RunArgs) -> io::Result<()> {
+pub fn run(store: &Store, args: RunArgs) -> io::Result<String> {
     let max = args
         .max
         .map(Ok)
@@ -113,7 +113,8 @@ pub fn run(store: &Store, args: RunArgs) -> io::Result<()> {
         display_path(&dir),
         display_path(&dir.join("last.md"))
     );
-    Ok(())
+    io::stdout().flush()?;
+    Ok(job.id)
 }
 
 pub fn supervise(store: &Store, id: &str, max: u32) -> io::Result<()> {

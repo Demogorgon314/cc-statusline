@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 struct Fixture(PathBuf);
@@ -25,7 +25,7 @@ done
 echo '{"type":"thread.started","thread_id":"t-1"}'
 sleep "${CXJ_SLEEP:-0.05}"
 while [ -n "${CXJ_GATE:-}" ] && [ ! -f "$CXJ_GATE" ]; do sleep 0.05; done
-echo OK > "$output"
+if [ "${CXJ_NO_RESULT:-0}" != 1 ]; then printf 'OK\nFinal details\n' > "$output"; fi
 echo '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'
 exit "${CXJ_EXIT:-0}"
 "#,
@@ -161,6 +161,12 @@ fn failed_exit_is_preserved() {
     let f = Fixture::new("failed");
     let id = f.submit(false, 23);
     assert_eq!(f.wait(&id, "failed")["exit_code"], 23);
+    let out = f.command().args(["wait", &id]).output().unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("Status: failed"));
+    assert!(text.contains("Codex exit code: 23"));
+    assert!(text.contains("may be incomplete"));
 }
 
 #[test]
@@ -170,6 +176,9 @@ fn cancel_terminates_process_group() {
     let pid = f.wait(&id, "running")["codex_pid"].as_i64().unwrap() as i32;
     f.run(&["cancel", &id]);
     assert_eq!(f.job(&id)["status"], "cancelled");
+    let out = f.command().args(["wait", &id]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Status: cancelled"));
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
     assert_eq!(
         std::io::Error::last_os_error().raw_os_error(),
@@ -192,6 +201,95 @@ fn dead_supervisor_is_lost_without_reader_writes() {
     let jobs: Vec<Value> = serde_json::from_str(&f.run(&["ls", "--json"])).unwrap();
     assert_eq!(jobs[0]["status"], "lost");
     assert_eq!(f.job(&id)["status"], "running");
+    let out = f.command().args(["wait", &id]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Status: lost"));
     f.run(&["cancel", &id]);
     assert_eq!(f.job(&id)["status"], "cancelled");
+}
+
+fn finish_waiter(mut child: Child) -> Output {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("waiter did not finish");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn run_wait_delivers_final_response_and_replays_without_resubmitting() {
+    let f = Fixture::new("run-wait");
+    let child = f
+        .command()
+        .args(["run", "--wait", "-m", "test", "-e", "low", "prompt.md"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = finish_waiter(child);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    let id = text.split_whitespace().nth(2).unwrap();
+    assert!(text.contains("Status: done\nCodex exit code: 0"));
+    assert!(text.contains("--- Final response ---\nOK\nFinal details"));
+    let replay = f.run(&["wait", id]);
+    assert!(replay.contains("--- Final response ---\nOK\nFinal details"));
+    let jobs: Vec<Value> = serde_json::from_str(&f.run(&["ls", "--json"])).unwrap();
+    assert_eq!(jobs.len(), 1);
+    let result = f.0.join("store/jobs").join(id).join("last.md");
+    for missing in [false, true] {
+        if missing {
+            fs::remove_file(&result).unwrap();
+        } else {
+            fs::write(&result, " \n").unwrap();
+        }
+        let out = f.command().args(["wait", id]).output().unwrap();
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("final response"));
+    }
+}
+
+#[test]
+fn queued_job_can_be_reattached_after_waiter_is_killed() {
+    let f = Fixture::new("reattach");
+    let first = f.submit(true, 0);
+    f.wait(&first, "running");
+    let second = f.submit(true, 0);
+    f.wait(&second, "running");
+    let third = f.submit(true, 0);
+    assert_eq!(f.job(&third)["status"], "queued");
+    let mut waiter = f
+        .command()
+        .args(["wait", &third])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    waiter.kill().unwrap();
+    waiter.wait().unwrap();
+    assert_eq!(f.job(&third)["status"], "queued");
+    let replacement = f
+        .command()
+        .args(["wait", &third])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    fs::write(f.0.join("release"), "").unwrap();
+    let out = finish_waiter(replacement);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("--- Final response ---\nOK"));
 }

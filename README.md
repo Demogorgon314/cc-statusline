@@ -100,7 +100,7 @@ With parallel subagents, the footer shows their combined output rate and how man
 
 ### Codex background jobs
 
-Queue work with `cc-statusline codex run -m gpt-6.1-sol -e high prompt.md`. The `codex` segment shows running jobs and recent results; enable **Codex** in the configurator for existing configs (new configs enable it). The optional Claude Code plugin sends status changes into your session and adds list, log, result, and cancel commands. See the [plugin setup and CLI guide](plugins/codex-jobs/README.md).
+Queue work with `cc-statusline codex run -m gpt-6.1-sol -e high prompt.md`. The `codex` segment shows running jobs and recent results; enable **Codex** in the configurator for existing configs (new configs enable it). With a build supporting `run --wait` and `wait <id>`, the Claude Code plugin uses native Bash background tasks to deliver completion notifications; Claude reads the task output for the final result. The monitor provides optional progress updates. The plugin also adds list, log, result, and cancel commands. See the [plugin setup and CLI guide](plugins/codex-jobs/README.md).
 
 <details>
 <summary>Segments</summary>

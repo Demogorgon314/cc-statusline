@@ -100,7 +100,7 @@ cc-statusline 是单个 Rust 二进制。会话变长时，每次刷新仍限制
 
 ### Codex 后台任务
 
-通过 `cc-statusline codex run -m gpt-6.1-sol -e high prompt.md` 提交后台任务。`codex` 段显示运行中的任务和最近结果；已有配置请在配置器中开启 **Codex**，新配置默认开启。可选的 Claude Code 插件会把状态变化推送到会话，并提供列表、日志、结果和取消命令。详见[插件安装和 CLI 指南](plugins/codex-jobs/README.md)。
+通过 `cc-statusline codex run -m gpt-6.1-sol -e high prompt.md` 提交后台任务。`codex` 段显示运行中的任务和最近结果；已有配置请在配置器中开启 **Codex**，新配置默认开启。在支持 `run --wait` 和 `wait <id>` 的构建中，插件通过原生 Bash 后台任务发送完成通知，Claude 再读取任务输出获取最终结果；monitor 只提供可选的进度通知。插件也提供列表、日志、结果和取消命令。详见[插件安装和 CLI 指南](plugins/codex-jobs/README.md)。
 
 <details>
 <summary>所有段</summary>

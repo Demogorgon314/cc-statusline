@@ -1,30 +1,30 @@
 ---
 name: codex-jobs
-description: Delegate research or implementation to Codex in the background, with queued execution and completion notifications.
+description: Delegate research or implementation to Codex in the background, with queued execution and final results delivered through native task notifications.
 ---
 
-Write a prompt file describing the task, working directory, constraints, and expected deliverable. Resolve the installed `cc-statusline` executable first: check `command -v cc-statusline`, then executable files at `$CC_STATUSLINE_BIN_DIR/cc-statusline` (when set), `$HOME/.local/bin/cc-statusline`, and `$HOME/.cargo/bin/cc-statusline`. Verify the selected executable with `codex log --help`. If none works, report the missing prerequisite instead of submitting a job. Use its quoted absolute path for every command; do not assume `codex-jobs` is on PATH. Replace `/absolute/path/cc-statusline` below with that verified path in each Bash call (shell variables do not persist between calls):
+Resolve the installed `cc-statusline` executable: check `command -v cc-statusline`, then executable files at `$CC_STATUSLINE_BIN_DIR/cc-statusline` (when set), `$HOME/.local/bin/cc-statusline`, and `$HOME/.cargo/bin/cc-statusline`. Verify it supports `codex wait --help` and `codex run --help` with `--wait`. If not, report that a newer build is needed before submitting work. Use the verified, quoted absolute path in every Bash call; do not assume `codex-jobs` is on PATH or that shell variables persist between calls.
 
-```sh
-"/absolute/path/cc-statusline" codex run -m gpt-6.1-sol -e high --title "Describe the task" -C /absolute/project/path prompt.md
-```
-
-Always specify both model and effort. Use `gpt-6.1-sol` (cheaper, usually `high`) for routine work; use `gpt-6-astra` (stronger, pricier, usually `medium`) for hard work. Use `-s read-only` for research that needs no writes; the default is `workspace-write`. Extra Codex flags go after `--`.
-
-Keep running jobs within the configured maximum: the global queue does this automatically (`--max`, then `CODEX_JOBS_MAX`, then 2). Use a consistent limit across submissions. Jobs from all projects share slots. Coordinate file ownership for implementation jobs that share a checkout.
-
-After submission, register one completion waiter for the returned job ID using Claude Code's Bash tool:
+Write a prompt file describing the task, working directory, constraints, and expected deliverable. Submit and wait in a single Claude Code Bash tool call, replacing the paths below with actual paths:
 
 ```json
 {
-  "command": "\"/absolute/path/cc-statusline\" codex log <id> -f",
+  "command": "\"/absolute/path/cc-statusline\" codex run --wait -m gpt-6.1-sol -e high --title \"Describe the task\" -C /absolute/project/path /absolute/path/prompt.md",
   "run_in_background": true,
-  "description": "Wait for Codex job <id> to finish"
+  "description": "Codex: describe the task"
 }
 ```
 
-Replace `<id>` with the returned job ID. Bash's `run_in_background` registers a native Claude Code task; shell `&` does not. Continue independent work without repeated polling or sleep loops. The follow command exits when the job ends, including when it finished before the waiter started, and Claude Code delivers a native task completion notification.
+Always specify model and effort. Use `gpt-6.1-sol` (cheaper, usually `high`) for routine work; use `gpt-6-astra` (stronger, pricier, usually `medium`) for hard work. Use `-s read-only` for research that needs no writes; the default is `workspace-write`. Extra Codex flags go after `--`.
 
-On notification, always run `"/absolute/path/cc-statusline" codex show <id>` to check the actual job status, then read its reported `last.md` path and incorporate the result. The waiter's exit code is not the Codex job's exit code: a successful waiter can represent a failed, cancelled, or lost job. If the waiter fails or stops while the job is active, resolve the cause and register a replacement. Stopping the waiter does not cancel Codex; use `"/absolute/path/cc-statusline" codex cancel <id>` to stop the work.
+The global queue defaults to two concurrent jobs across projects. Keep that limit consistent across submissions and coordinate file ownership for tasks sharing a checkout. `run --wait` prints the job ID immediately, then waits through queueing and execution. Bash's `run_in_background` registers the native task; shell `&` does not. Continue independent work without repeated polling or sleep loops. Do not start a second waiter for the same job.
 
-The plugin monitor provides optional progress updates; do not rely on it for completion delivery. It may be unavailable even when the plugin is enabled. Handle duplicate monitor/native notifications only once. Without native background notifications, run `"/absolute/path/cc-statusline" codex log <id> -f` in the foreground and check `show` afterwards; do not promise an asynchronous notification.
+When the native completion notification arrives, read its `output-file`. The notification itself need not contain the result. The output contains the job ID, final status, original Codex exit code, absolute `last.md` path, and final response. A zero command exit means a successful job with a readable, nonempty response. Other outcomes return nonzero (currently 1); inspect the report rather than treating that as the original Codex exit code. Failed, cancelled, or lost jobs may have a partial response explicitly labelled as incomplete. Incorporate the final result into your work; use `show <id>` for further diagnostics and read the reported `last.md` if the task output is truncated.
+
+If the native task is interrupted while Codex is still active, recover the job ID from its initial output (or `codex ls --here`) and attach using another Bash call with `run_in_background: true`:
+
+```sh
+"/absolute/path/cc-statusline" codex wait <id>
+```
+
+`wait` attaches to the existing job and immediately reports an already-finished job; do not resubmit the prompt. Stopping a waiter does not cancel Codex. Use `codex cancel <id>` to stop work, and `codex log <id>` to inspect progress. The optional monitor is not the completion guarantee. Handle duplicate notifications only once. Without native background notifications, run `run --wait` or `wait <id>` in the foreground; do not promise asynchronous delivery.
