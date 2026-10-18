@@ -2,7 +2,7 @@
 
 Delegate work to `codex exec` and receive status changes in your Claude Code session. Jobs survive the invoking shell and share a global FIFO queue. The footer's `codex` segment shows running, queued, and recent results.
 
-Requires cc-statusline **0.7.3 or later** on PATH, in `~/.local/bin` or `~/.cargo/bin`, or in `$CC_STATUSLINE_BIN_DIR`; also requires an authenticated `codex` executable. Running and cancelling jobs requires Unix. Plugin monitors run in interactive Claude Code sessions with Monitor support.
+Requires cc-statusline **0.8.0 or later** on PATH, in `~/.local/bin` or `~/.cargo/bin`, or in `$CC_STATUSLINE_BIN_DIR`; also requires an authenticated `codex` executable. Running and cancelling jobs requires Unix. Plugin monitors run in interactive Claude Code sessions with Monitor support.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Demogorgon314/cc-statusline/main/install.sh | sh
