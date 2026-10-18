@@ -1,7 +1,6 @@
 //! Claude Code status line: stdin JSON, local transcript accounting and an interactive configurator.
 
 mod appearance;
-mod codex;
 mod collect;
 mod config;
 mod install;
@@ -41,11 +40,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Manage background Codex jobs
-    Codex {
-        #[command(subcommand)]
-        cmd: codex::CodexCmd,
-    },
     /// Interactive configurator (running with no arguments opens the menu)
     Config,
     /// Set this binary as statusLine.command in settings.json
@@ -103,7 +97,6 @@ enum Cmd {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
-        Some(Cmd::Codex { cmd }) => codex::dispatch(cmd),
         Some(Cmd::Config) => tui::run_configurator(),
         Some(Cmd::Install {
             command,

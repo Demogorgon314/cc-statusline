@@ -1,7 +1,0 @@
-{
-  "name": "codex-jobs",
-  "version": "0.8.0",
-  "description": "Background Codex jobs with completion notifications and a status line segment",
-  "author": { "name": "Demogorgon314" },
-  "repository": "https://github.com/Demogorgon314/cc-statusline"
-}

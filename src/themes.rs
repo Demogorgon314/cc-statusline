@@ -26,7 +26,6 @@ pub const BUILTIN: [(&str, &str); 10] = [
 fn icons(id: SegmentId, minimal: bool) -> (&'static str, &'static str) {
     use SegmentId::*;
     match (id, minimal) {
-        (Codex, _) => ("⚙", "\u{f0ad}"),
         (Mode, false) => ("🛡️", "\u{f0483}"),
         (Mode, true) => ("◆", "\u{f0483}"),
         (Cost, false) => ("💰", "\u{f155}"),
@@ -64,11 +63,6 @@ pub(crate) fn default_options(id: SegmentId) -> BTreeMap<String, toml::Value> {
         o.insert(k.to_string(), v);
     };
     match id {
-        SegmentId::Codex => {
-            put("scope", "project".into());
-            put("recent_secs", 600.into());
-            put("max_jobs", 2.into());
-        }
         SegmentId::Directory => put("depth", 3.into()),
         SegmentId::Git => {
             put("status", true.into());
@@ -206,7 +200,7 @@ fn fg_theme(
     separator: &str,
     bold: bool,
     minimal: bool,
-    colors: [(Option<AnsiColor>, Option<AnsiColor>); 15],
+    colors: [(Option<AnsiColor>, Option<AnsiColor>); 14],
 ) -> Config {
     let specs = SegmentId::ALL
         .into_iter()
@@ -226,7 +220,7 @@ type Triple = (u8, u8, u8);
 
 /// powerline preset: one (fg, bg) pair per segment. Backgrounds alternate
 /// between two shades along the default enabled order so each arrow shows.
-fn pl_theme(name: &str, colors: [(Triple, Triple); 15]) -> Config {
+fn pl_theme(name: &str, colors: [(Triple, Triple); 14]) -> Config {
     let specs = SegmentId::ALL
         .into_iter()
         .zip(colors)
@@ -306,7 +300,6 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(3),
                     pair(10),
                     pair(10),
-                    pair(6),
                 ],
             );
             if name == "default" {
@@ -337,7 +330,6 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(3),
                     pair(10),
                     pair(10),
-                    pair(6),
                 ],
             )
         }
@@ -364,7 +356,6 @@ pub fn builtin(name: &str) -> Option<Config> {
                     pair(214),
                     pair(108),
                     pair(108),
-                    pair(109),
                 ],
             )
         }
@@ -387,7 +378,6 @@ pub fn builtin(name: &str) -> Option<Config> {
                     (235, 203, 139),
                     (136, 192, 208),
                     (136, 192, 208),
-                    (143, 188, 187),
                 ])
                 .map(|(id, (r, g, b))| Spec {
                     id,
@@ -416,7 +406,6 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((229, 192, 123), (40, 42, 48)),
                 ((152, 195, 121), (40, 42, 48)),
                 ((86, 182, 194), (62, 66, 76)),
-                ((86, 182, 194), (62, 66, 76)),
             ],
         ),
         "powerline-light" => pl_theme(
@@ -436,7 +425,6 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((0, 0, 0), (251, 146, 60)),
                 ((255, 255, 255), (21, 128, 61)),
                 ((255, 255, 255), (29, 78, 216)),
-                ((255, 255, 255), (15, 118, 110)),
             ],
         ),
         "powerline-rose-pine" => pl_theme(
@@ -456,7 +444,6 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((246, 193, 119), (38, 35, 58)),
                 ((156, 207, 216), (38, 35, 58)),
                 ((156, 207, 216), (64, 61, 82)),
-                ((156, 207, 216), (64, 61, 82)),
             ],
         ),
         "powerline-tokyo-night" => pl_theme(
@@ -475,7 +462,6 @@ pub fn builtin(name: &str) -> Option<Config> {
                 ((158, 206, 106), (65, 72, 104)),
                 ((232, 190, 128), (41, 46, 66)),
                 ((125, 207, 255), (41, 46, 66)),
-                ((125, 207, 255), (65, 72, 104)),
                 ((125, 207, 255), (65, 72, 104)),
             ],
         ),

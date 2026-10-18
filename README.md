@@ -98,10 +98,6 @@ With parallel subagents, the footer shows their combined output rate and how man
 
 ## Reference
 
-### Codex background jobs
-
-Queue work with `cc-statusline codex run -m gpt-6.1-sol -e high prompt.md`. The `codex` segment shows running jobs and recent results; enable **Codex** in the configurator for existing configs (new configs enable it). With a build supporting `run --wait` and `wait <id>`, the Claude Code plugin uses native Bash background tasks to deliver completion notifications; Claude reads the task output for the final result. The monitor provides optional progress updates. The plugin also adds list, log, result, and cancel commands. See the [plugin setup and CLI guide](plugins/codex-jobs/README.md).
-
 <details>
 <summary>Segments</summary>
 
@@ -120,10 +116,9 @@ Queue work with `cc-statusline codex run -m gpt-6.1-sol -e high prompt.md`. The 
 | `session` | Accumulated session duration (disabled by default) |
 | `quota` | Five-hour / seven-day quota, optional gateway spend limit, reset times |
 | `changes` | Session lines added/removed (disabled by default) |
-| `codex` | Background Codex jobs: running, queued, and recent results |
 | `tps` | Recent output per second of generation: `≈42 tok/s`, with `×3` when three logs produced output in the last 30 seconds (compact: `≈42 t/s ×3`; disabled by default) |
 
-When space runs out, segments drop in this order: session → changes → codex → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode.
+When space runs out, segments drop in this order: session → changes → git → directory → subagent → usage → tps → output_style → cost → cache → context → quota → mode.
 
 `ctx` counts the main conversation's input plus cache reads and writes, excluding output; Claude's native percentage takes precedence. When `/autocompact` sets a smaller window for the model (`modelSettings.<id>.autoCompactWindow` in settings.json), that window becomes the capacity, since compaction fires there. Subagents have independent contexts and are not added to this percentage. Session totals come from the exact supplied transcript and its adjacent subagent logs, deduplicated by message ID. The `sub` segment includes finished tasks and groups them by model, not by agent; compact mode shows the largest model and a count of the rest. Incomplete totals are marked `≈` and dimmed. Missing sessions never inherit another session's statistics. Quota belongs to the account and can persist across sessions.
 

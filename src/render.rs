@@ -21,7 +21,6 @@ const POWERLINE_ARROW: &str = "\u{e0b0}";
 /// Everything a render needs, gathered up front so fitting can re-render
 /// cheaply at each degradation stage.
 pub struct Ctx {
-    pub codex_jobs: Vec<crate::codex::Job>,
     pub payload: Payload,
     pub config: Config,
     pub palette: Palette,
@@ -202,7 +201,7 @@ fn fmt_rate(r: f64) -> String {
     }
 }
 
-pub(crate) fn fmt_duration(secs: u64) -> String {
+fn fmt_duration(secs: u64) -> String {
     match secs {
         0..=59 => format!("{secs}s"),
         60..=3599 => format!("{}m", secs / 60),
@@ -551,7 +550,6 @@ fn segment(ctx: &Ctx, seg: &SegmentConfig, compact: bool) -> Option<Vec<Span>> {
             Some(spans)
         }
         SegmentId::Quota => quota_segment(ctx, seg, compact),
-        SegmentId::Codex => codex_segment(&ctx.codex_jobs, ctx.now, seg, compact),
         SegmentId::Changes => (p.lines_added > 0 || p.lines_removed > 0)
             .then(|| vec![plain(format!("+{} -{}", p.lines_added, p.lines_removed))]),
         SegmentId::Session => {
@@ -568,83 +566,6 @@ fn mark_incomplete(spans: &mut Vec<Span>) {
     for span in spans {
         span.dim = true;
     }
-}
-
-fn codex_segment(
-    jobs: &[crate::codex::Job],
-    now: f64,
-    seg: &SegmentConfig,
-    compact: bool,
-) -> Option<Vec<Span>> {
-    use crate::codex::Status;
-    let running: Vec<_> = jobs
-        .iter()
-        .filter(|j| j.status == Status::Running)
-        .collect();
-    let queued = jobs.iter().filter(|j| j.status == Status::Queued).count();
-    let recent_secs = seg.opt_int("recent_secs", 600).max(0) as f64;
-    let recent = |j: &&crate::codex::Job| j.ended_at.is_some_and(|t| now - t <= recent_secs);
-    let done = jobs
-        .iter()
-        .filter(recent)
-        .filter(|j| j.status == Status::Done)
-        .count();
-    // Lost jobs keep their active marker until explicitly cleaned up.
-    let failed = jobs
-        .iter()
-        .filter(|j| j.status == Status::Lost || (j.status == Status::Failed && recent(j)))
-        .count();
-    if running.is_empty() && queued + done + failed == 0 {
-        return None;
-    }
-    let mut spans = vec![plain(if compact { "cx" } else { "codex" })];
-    if !running.is_empty() {
-        if compact {
-            spans.push(plain(format!(" ●{}", running.len())));
-        } else if running.len() > seg.opt_int("max_jobs", 2).max(0) as usize {
-            let longest = running.iter().map(|j| j.elapsed(now)).max().unwrap_or(0);
-            spans.push(plain(format!(
-                " ●{} · longest {}",
-                running.len(),
-                fmt_duration(longest)
-            )));
-        } else {
-            for (i, job) in running.iter().enumerate() {
-                let model = job.model.as_deref().unwrap_or("?");
-                let model = model.strip_prefix("gpt-").unwrap_or(model);
-                let effort = match job.effort.as_deref().unwrap_or("?") {
-                    "medium" => "med",
-                    "minimal" => "min",
-                    s => s,
-                };
-                spans.push(plain(format!(
-                    "{}{} {}/{} {}",
-                    if i == 0 { " " } else { " · " },
-                    job.id,
-                    crate::payload::label(model),
-                    crate::payload::label(effort),
-                    fmt_duration(job.elapsed(now))
-                )));
-            }
-        }
-    }
-    if queued > 0 {
-        spans.push(colored(
-            if compact {
-                format!(" ◌{queued}")
-            } else {
-                format!(" +{queued} queued")
-            },
-            token("text_muted"),
-        ));
-    }
-    if done > 0 {
-        spans.push(colored(format!(" ✓{done}"), token("success")));
-    }
-    if failed > 0 {
-        spans.push(colored(format!(" ✗{failed}"), token("error")));
-    }
-    Some(spans)
 }
 
 fn usage_triple(seg: &SegmentConfig, u: &Usage, compact: bool, cache: bool) -> Vec<Span> {
@@ -995,10 +916,9 @@ pub fn render(ctx: &Ctx, width: Option<usize>) -> String {
         return wrap(ctx, width);
     }
     use SegmentId::*;
-    const DROP_ORDER: [SegmentId; 14] = [
+    const DROP_ORDER: [SegmentId; 13] = [
         Session,
         Changes,
-        Codex,
         Git,
         Directory,
         Subagent,
@@ -1166,7 +1086,6 @@ mod tests {
         config.segments[0].enabled = true;
         config.style.wrap = false;
         let mut ctx = Ctx {
-            codex_jobs: Vec::new(),
             payload: Payload::default(),
             config,
             palette: crate::appearance::DARK,
@@ -1217,7 +1136,6 @@ mod tests {
         config.segments[0].enabled = true;
         config.style.wrap = false;
         let mut ctx = Ctx {
-            codex_jobs: Vec::new(),
             payload: Payload::default(),
             config,
             palette: crate::appearance::DARK,
@@ -1262,7 +1180,6 @@ mod tests {
         let mut config = crate::themes::builtin("claude").unwrap();
         config.style.wrap = true;
         let ctx = Ctx {
-            codex_jobs: Vec::new(),
             payload: Payload {
                 cwd: "/home/me/project".into(),
                 git_branch: Some("main".into()),
@@ -1300,7 +1217,6 @@ mod tests {
         let mut config = crate::themes::builtin("powerline-light").unwrap();
         config.segments.retain(|s| s.id == SegmentId::Git);
         let mut ctx = Ctx {
-            codex_jobs: Vec::new(),
             payload: Payload {
                 git_branch: Some("main".into()),
                 ..Default::default()
@@ -1392,45 +1308,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_full_compact_overflow_and_recent_results() {
-        let cfg = crate::themes::builtin("claude").unwrap();
-        let seg = cfg.segment(SegmentId::Codex).unwrap();
-        let mut jobs: Vec<crate::codex::Job> = serde_json::from_value(serde_json::json!([
-            {"id":"3f2a","status":"running","model":"gpt-6.1-sol","effort":"high","started_at":100},
-            {"id":"9c1e","status":"running","model":"gpt-6-astra","effort":"medium","started_at":0},
-            {"id":"aaaa","status":"queued"},
-            {"id":"bbbb","status":"done","ended_at":300},
-            {"id":"cccc","status":"failed","ended_at":300},
-            {"id":"dddd","status":"cancelled","ended_at":300}
-        ]))
-        .unwrap();
-        let text = |jobs: &[crate::codex::Job], seg, compact| {
-            codex_segment(jobs, 352.0, seg, compact)
-                .map(|spans| spans.into_iter().map(|s| s.text).collect::<String>())
-        };
-        assert_eq!(
-            text(&jobs, seg, false).unwrap(),
-            "codex 3f2a 6.1-sol/high 4m · 9c1e 6-astra/med 5m +1 queued ✓1 ✗1"
-        );
-        assert_eq!(text(&jobs, seg, true).unwrap(), "cx ●2 ◌1 ✓1 ✗1");
-        let mut limited = seg.clone();
-        limited.options.insert("max_jobs".into(), 1.into());
-        assert_eq!(
-            text(&jobs, &limited, false).unwrap(),
-            "codex ●2 · longest 5m +1 queued ✓1 ✗1"
-        );
-        jobs.drain(..3);
-        assert_eq!(text(&jobs, seg, false).unwrap(), "codex ✓1 ✗1");
-        assert_eq!(text(&[], seg, false), None);
-        for job in &mut jobs {
-            job.ended_at = Some(-1000.0);
-        }
-        assert_eq!(text(&jobs, seg, false), None);
-        jobs[0].status = crate::codex::Status::Lost;
-        assert_eq!(text(&jobs, seg, false).unwrap(), "codex ✗1");
-    }
-
-    #[test]
     fn width_ignores_escapes_and_counts_cjk() {
         assert_eq!(visible_width("\x1b[38;2;1;2;3mab\x1b[22m\x1b[39m"), 2);
         assert_eq!(visible_width("缓存"), 4);
@@ -1458,7 +1335,6 @@ mod tests {
                 .options
                 .insert("show_reset".into(), false.into());
             let ctx = Ctx {
-                codex_jobs: Vec::new(),
                 payload: Payload::default(),
                 config,
                 palette: crate::appearance::DARK,
@@ -1492,7 +1368,6 @@ mod tests {
             let mut config = crate::themes::builtin(theme).unwrap();
             config.segments.retain(|s| s.id == SegmentId::Cost);
             let ctx = Ctx {
-                codex_jobs: Vec::new(),
                 payload: Payload {
                     cost_usd: Some(1.23),
                     ..Payload::default()
